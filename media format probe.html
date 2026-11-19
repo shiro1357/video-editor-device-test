@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Media Format Probe (Step A)</title>
+<style>
+:root{--bg:#f4f4f6;--fg:#1c1c1e;--sub:#6b6b70;--card:#fff;--ac:#0a84ff;--line:#c4c4ca;--ok:#1a7f37;--warn:#b26a00;--bad:#c62828;--info:#5856d6;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111113;--fg:#f2f2f4;--sub:#9a9aa0;--card:#1c1c1f;--ac:#4da3ff;--line:#48484d;--ok:#4cc26a;--warn:#f0a63a;--bad:#ff6b6b;--info:#8e8cff}}
+:root[data-theme="dark"]{--bg:#111113;--fg:#f2f2f4;--sub:#9a9aa0;--card:#1c1c1f;--ac:#4da3ff;--line:#48484d;--ok:#4cc26a;--warn:#f0a63a;--bad:#ff6b6b;--info:#8e8cff}
+*{box-sizing:border-box}
+html,body{background:var(--bg)}
+body{margin:0 auto;color:var(--fg);font:15px/1.5 -apple-system,"Hiragino Sans","Segoe UI",sans-serif;max-width:900px;padding:12px;overflow-wrap:anywhere}
+h1{font-size:18px;margin:4px 0 2px}
+.card{background:var(--card);border-radius:12px;padding:12px;margin-bottom:10px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button,.btn{background:var(--ac);color:#fff;border:0;border-radius:10px;padding:10px 16px;font-size:15px;min-height:44px;touch-action:manipulation;cursor:pointer}
+button.sec{background:transparent;color:var(--ac);border:1px solid var(--line)}
+button:disabled{opacity:.45}
+small,.sub{color:var(--sub);font-size:12.5px}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:14px;text-align:center}
+.drop.on{border-color:var(--ac)}
+.badge{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12.5px;font-weight:700;color:#fff;background:var(--sub);white-space:nowrap}
+.b-native-ready{background:var(--ok)}.b-native-limited{background:var(--warn)}.b-conversion-required{background:var(--info)}
+.b-unsupported,.b-probe-failed{background:var(--bad)}.b-awaiting-user-playback,.b-running,.b-queued{background:var(--sub)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{border:1px solid var(--line);border-radius:8px;padding:2px 8px;font-size:12.5px}
+.chip.y{border-color:var(--ok);color:var(--ok)}.chip.n{border-color:var(--bad);color:var(--bad)}.chip.u{color:var(--sub)}
+details{margin:6px 0;border-top:1px solid var(--line);padding-top:6px}
+summary{font-weight:600;cursor:pointer;min-height:32px}
+table.kv{width:100%;border-collapse:collapse;font-size:13.5px}
+table.kv td{padding:2px 4px;vertical-align:top;border-bottom:1px solid var(--line)}
+table.kv td:first-child{color:var(--sub);width:38%}
+.unk{color:var(--sub);font-style:italic}
+.trk{border-left:3px solid var(--ac);padding-left:8px;margin:8px 0}
+.trk.aud{border-color:var(--info)}
+.pvwrap{margin:8px 0}.pvwrap canvas,.pvwrap video,.pvwrap img{max-width:100%;max-height:260px;border-radius:8px;background:#000;display:block}
+.warn{color:var(--warn)}.err{color:var(--bad)}
+pre{white-space:pre-wrap;max-height:300px;overflow:auto;background:var(--bg);padding:8px;border-radius:8px;font-size:12px}
+.hd{display:flex;gap:8px;justify-content:space-between;align-items:flex-start}
+.nm{font-weight:700}
+</style></head>
+<body>
+<h1>Media Format Probe <small>Step A / v1.0.0</small></h1>
+<small>動画・画像・音声の「解析できた」「ブラウザがデコードできた」「実際に表示/再生できた」を別々に検査します。ファイルは端末内でのみ処理し、送信しません。1ファイルずつ順番に検査します。</small>
+
+<div class="card" style="margin-top:10px">
+  <div class="drop" id="drop">
+    <div class="row" style="justify-content:center">
+      <label class="btn" for="fi">ファイルを選択</label>
+      <input id="fi" type="file" multiple hidden accept="video/*,audio/*,image/*,.mov,.mkv,.webm,.ogv,.ogg,.opus,.3gp,.3g2,.ts,.m2ts,.avi,.wmv,.flv,.heic,.heif,.avif,.jxl,.bmp,.tif,.tiff,.svg,.mp3,.wav,.m4a,.aac,.flac,.aif,.aiff,.caf,.ac3,.wma">
+      <button class="sec" id="bClear">全て消去</button>
+    </div>
+    <small>動画・画像・音声（複数可）。ここへドロップも可。</small>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="bJson">JSON保存</button><button class="sec" id="bCopy">JSONコピー</button><button class="sec" id="bShow">JSON表示</button>
+    <small id="liveInfo"></small>
+  </div>
+  <pre id="jsonView" hidden></pre>
+</div>
+
+<div class="card"><details><summary>実行環境・ライブラリ</summary><div id="envBox"></div></details></div>
+<div id="list"></div>
+
+<script>
+'use strict';
+/* ============ 定数 ============ */
+const TOOL={name:'media_format_probe',version:'1.0.0',schema:'media-format-probe/1'};
+const MB_VER='1.64.0';
+const MB_SOURCES=['https://cdn.jsdelivr.net/npm/mediabunny@'+MB_VER+'/dist/bundles/mediabunny.min.mjs','./vendor/mediabunny.min.mjs'];
+const TO={meta:15000,loaded:8000,canplay:4000,frame:2500,seek:6000,imgDecode:20000,mbLoad:20000};
+const LISTEN_MS=5000, THUMB_MAX=320, PKT_SAMPLE=300;
+const UNK='不明／取得不可';
+const $=s=>document.querySelector(s);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const now=()=>performance.now();
+const ms=n=>Math.round(n);
+const fmtBytes=n=>n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':n<1073741824?(n/1048576).toFixed(2)+' MB':(n/1073741824).toFixed(2)+' GB';
+const fmtDur=s=>{if(!isFinite(s))return null;const m=Math.floor(s/60);return m+':'+(s-m*60).toFixed(3).padStart(6,'0')+' ('+s.toFixed(3)+'s)'};
+const errStr=e=>e&&e.name?(e.name+': '+(e.message||'')):String(e);
+
+/* ============ Object URL管理（解放漏れの可視化） ============ */
+const liveUrls=new Set();
+function mkUrl(blob){const u=URL.createObjectURL(blob);liveUrls.add(u);updLive();return u}
+function rmUrl(u){if(u&&liveUrls.has(u)){URL.revokeObjectURL(u);liveUrls.delete(u);updLive()}}
+function updLive(){const e=$('#liveInfo');if(e)e.textContent='使用中Object URL: '+liveUrls.size}
+
+/* ============ 環境 ============ */
+function detectEnv(){
+  const ua=navigator.userAgent||'';let b='不明',v='';
+  const m=(re)=>{const r=ua.match(re);return r?r[1]:''};
+  if(/Edg\//.test(ua)){b='Edge';v=m(/Edg\/([\d.]+)/)}
+  else if(/OPR\//.test(ua)){b='Opera';v=m(/OPR\/([\d.]+)/)}
+  else if(/CriOS\//.test(ua)){b='Chrome(iOS)';v=m(/CriOS\/([\d.]+)/)}
+  else if(/FxiOS\//.test(ua)){b='Firefox(iOS)';v=m(/FxiOS\/([\d.]+)/)}
+  else if(/Firefox\//.test(ua)){b='Firefox';v=m(/Firefox\/([\d.]+)/)}
+  else if(/Chrome\//.test(ua)){b='Chrome/Chromium';v=m(/Chrome\/([\d.]+)/)}
+  else if(/Safari\//.test(ua)&&/Version\//.test(ua)){b='Safari';v=m(/Version\/([\d.]+)/)}
+  let os='不明';
+  if(/Windows/.test(ua))os='Windows';else if(/iPhone|iPad/.test(ua))os='iOS/iPadOS';
+  else if(/Macintosh/.test(ua))os=(navigator.maxTouchPoints>1)?'iPadOS（Macintosh UA+タッチ。推定）':'macOS';
+  else if(/Android/.test(ua))os='Android';else if(/Linux/.test(ua))os='Linux';
+  const w=window;
+  return {browser:b,browserVersion:v,os,userAgent:ua,
+    features:{mediaCapabilities:!!(navigator.mediaCapabilities&&navigator.mediaCapabilities.decodingInfo),
+      videoDecoder:typeof w.VideoDecoder==='function',audioDecoder:typeof w.AudioDecoder==='function',
+      requestVideoFrameCallback:'requestVideoFrameCallback' in HTMLVideoElement.prototype,
+      createImageBitmap:typeof w.createImageBitmap==='function',imageDecoder:typeof w.ImageDecoder==='function',
+      imgDecode:'decode' in HTMLImageElement.prototype,audioContext:!!(w.AudioContext||w.webkitAudioContext)}};
+}
+const ENV=detectEnv();
+let MB=null;const MBINFO={version:MB_VER,loaded:false,source:null,error:null,loadMs:null};
+async function loadMB(){
+  const t=now();const errs=[];
+  for(const src of MB_SOURCES){
+    try{
+      const mod=await Promise.race([import(src),new Promise((_,rj)=>setTimeout(()=>rj(new Error('timeout')),TO.mbLoad))]);
+      if(!mod||!mod.Input||!mod.BlobSource)throw new Error('Input/BlobSource が見つからない');
+      MB=mod;MBINFO.loaded=true;MBINFO.source=src;MBINFO.loadMs=ms(now()-t);break;
+    }catch(e){errs.push(src+' → '+errStr(e))}
+  }
+  if(!MB)MBINFO.error=errs.join(' | ');
+  renderEnv();
+}
+function renderEnv(){
+  const f=ENV.features;
+  $('#envBox').innerHTML='<table class="kv">'+[
+    ['ブラウザ',ENV.browser+' '+ENV.browserVersion],['OS（UAからの推定）',ENV.os],['User-Agent',ENV.userAgent],
+    ['MediaCapabilities',f.mediaCapabilities],['WebCodecs VideoDecoder / AudioDecoder',f.videoDecoder+' / '+f.audioDecoder],
+    ['requestVideoFrameCallback',f.requestVideoFrameCallback],['createImageBitmap / img.decode()',f.createImageBitmap+' / '+f.imgDecode],
+    ['Mediabunny '+MB_VER+' (MPL-2.0)',MBINFO.loaded?('読込済 '+MBINFO.loadMs+'ms ← '+MBINFO.source):(MBINFO.error?'読込失敗（標準APIのみで検査）: '+MBINFO.error:'読込中…')]
+  ].map(r=>'<tr><td>'+esc(r[0])+'</td><td>'+esc(r[1])+'</td></tr>').join('')+'</table>';
+}
+
+/* ============ FileSniffer ============ */
+const ascii=(b,o,n)=>{let s='';for(let i=o;i<o+n&&i<b.length;i++)s+=String.fromCharCode(b[i]);return s};
+const u32=(b,o)=>((b[o]<<24)|(b[o+1]<<16)|(b[o+2]<<8)|b[o+3])>>>0;
+const u16le=(b,o)=>b[o]|(b[o+1]<<8), u32le=(b,o)=>(b[o]|(b[o+1]<<8)|(b[o+2]<<16)|(b[o+3]<<24))>>>0;
+const IMG_FAM=new Set(['jpeg','png','gif','webp','bmp','tiff','svg','heic','avif','jxl','ico']);
+const AUD_FAM=new Set(['mp3','wav','flac','adts','aiff','caf','ac3','dts']);
+const PARSEABLE=new Set(['mp4','mov','3gp','m4a','webm','matroska','ogg','mp3','wav','flac','adts','mpegts']);
+const EXT_FAM={jpg:'jpeg',jpeg:'jpeg',jfif:'jpeg',png:'png',gif:'gif',webp:'webp',bmp:'bmp',tif:'tiff',tiff:'tiff',svg:'svg',heic:'heic',heif:'heic',heics:'heic',avif:'avif',jxl:'jxl',ico:'ico',
+  mp4:'isobmff',m4v:'isobmff',mov:'isobmff',m4a:'isobmff',m4b:'isobmff','3gp':'isobmff','3g2':'isobmff',webm:'webm',mkv:'matroska',mka:'matroska',ogv:'ogg',ogg:'ogg',oga:'ogg',opus:'ogg',
+  mp3:'mp3',wav:'wav',wave:'wav',flac:'flac',aac:'adts',aif:'aiff',aiff:'aiff',caf:'caf',ac3:'ac3',eac3:'ac3',dts:'dts',ts:'mpegts',m2ts:'mpegts',mts:'mpegts',avi:'avi',wmv:'asf',wma:'asf',asf:'asf',flv:'flv'};
+const famGroup=f=>['mp4','mov','3gp','m4a'].includes(f)?'isobmff':f;
+const AUDIO_EXT=new Set(['mp3','wav','wave','m4a','m4b','aac','flac','ogg','oga','opus','aif','aiff','caf','ac3','eac3','dts','mka','wma']);
+function getExt(n){const i=n.lastIndexOf('.');return i>=0?n.slice(i+1).toLowerCase():''}
+
+function parseExifOrientation(b){
+  if(b[0]!==0xFF||b[1]!==0xD8)return null;let o=2;
+  while(o+4<b.length){
+    if(b[o]!==0xFF)return null;const mk=b[o+1];if(mk===0xDA)return null;
+    const len=(b[o+2]<<8)|b[o+3];
+    if(mk===0xE1&&ascii(b,o+4,4)==='Exif'){
+      const t=o+10,le=ascii(b,t,2)==='II';
+      const r16=p=>le?(b[p]|(b[p+1]<<8)):((b[p]<<8)|b[p+1]);
+      const r32=p=>le?u32le(b,p):u32(b,p);
+      const ifd=t+r32(t+4);if(ifd+2>b.length)return null;
+      const n=r16(ifd);
+      for(let i=0;i<n;i++){const e=ifd+2+i*12;if(e+12>b.length)break;if(r16(e)===0x0112)return r16(e+8)}
+      return 0; // EXIFはあるがOrientationタグ無し
+    }
+    o+=2+len;
+  }
+  return null;
+}
+async function gifFrames(file){ // ブロック構造を先頭2MBまで走査し、2フレーム目が見つかれば動画GIF
+  const b=new Uint8Array(await file.slice(0,2*1048576).arrayBuffer());let o=13;
+  if(b.length<14)return null;
+  if(b[10]&0x80)o+=3*(1<<((b[10]&7)+1));
+  let frames=0;
+  while(o<b.length){
+    const t=b[o];
+    if(t===0x3B)return {frames,complete:true};
+    if(t===0x21){o+=2;while(o<b.length&&b[o]!==0){o+=b[o]+1}o++;continue}
+    if(t===0x2C){frames++;if(frames>=2)return {frames,complete:false};
+      const f=b[o+9];o+=10;if(f&0x80)o+=3*(1<<((f&7)+1));o++;
+      while(o<b.length&&b[o]!==0){o+=b[o]+1}o++;continue}
+    return null;
+  }
+  return {frames,complete:false,truncated:true};
+}
+async function sniff(file){
+  const b=new Uint8Array(await file.slice(0,65536).arrayBuffer());
+  const r={family:'unknown',kind:'unknown',label:'不明',details:{},bytesRead:b.length};
+  const set=(family,kind,label)=>{r.family=family;r.kind=kind;r.label=label};
+  const ext=getExt(file.name);
+  if(b.length<4){r.label='サイズ不足';return r}
+  if(b[0]===0xFF&&b[1]===0xD8&&b[2]===0xFF){set('jpeg','image','JPEG');const o=parseExifOrientation(b);r.details.exifOrientation=o===null?null:o;
+    for(let q=2;q+9<b.length&&b[q]===0xFF;){const mk=b[q+1];if(mk>=0xC0&&mk<=0xCF&&mk!==0xC4&&mk!==0xC8&&mk!==0xCC){r.details.rawHeight=(b[q+5]<<8)|b[q+6];r.details.rawWidth=(b[q+7]<<8)|b[q+8];break}q+=2+((b[q+2]<<8)|b[q+3])}}
+  else if(u32(b,0)===0x89504E47){set('png','image','PNG');
+    const ct=b[25];r.details.colorType=ct;r.details.bitDepth=b[24];
+    let p=8,trns=false,actl=false;while(p+8<b.length){const ty=ascii(b,p+4,4);if(ty==='tRNS')trns=true;if(ty==='acTL')actl=true;if(ty==='IDAT')break;p+=12+u32(b,p)}
+    r.details.headerAlpha=(ct===4||ct===6||trns);r.details.animated=actl}
+  else if(ascii(b,0,3)==='GIF'){set('gif','image','GIF'+ascii(b,3,3));r.details.width=u16le(b,6);r.details.height=u16le(b,8)}
+  else if(ascii(b,0,4)==='RIFF'&&ascii(b,8,4)==='WEBP'){set('webp','image','WebP');
+    const ck=ascii(b,12,4);r.details.chunk=ck;
+    if(ck==='VP8X'){r.details.headerAlpha=!!(b[20]&0x10);r.details.animated=!!(b[20]&0x02)}
+    else if(ck==='VP8L'){r.details.headerAlpha=!!(b[24]&0x10);r.details.animated=false}
+    else if(ck==='VP8 '){r.details.headerAlpha=false;r.details.animated=false}}
+  else if(b[0]===0x42&&b[1]===0x4D&&ext==='bmp'){set('bmp','image','BMP')}
+  else if((ascii(b,0,2)==='II'&&b[2]===42&&b[3]===0)||(ascii(b,0,2)==='MM'&&b[2]===0&&b[3]===42)){set('tiff','image','TIFF')}
+  else if(b[0]===0xFF&&b[1]===0x0A||u32(b,0)===0x0000000C&&ascii(b,4,4)==='JXL '){set('jxl','image','JPEG XL')}
+  else if(ascii(b,4,4)==='ftyp'){
+    const brand=ascii(b,8,4);const sz=u32(b,0);const compat=[];for(let p=16;p+4<=Math.min(sz,b.length);p+=4)compat.push(ascii(b,p,4));
+    r.details.brand=brand;r.details.compatible=compat;const all=[brand].concat(compat);
+    if(['avif','avis'].includes(brand)){set('avif','image','AVIF ('+brand+')');r.details.animated=brand==='avis'}
+    else if(['heic','heix','heim','heis','hevc','hevx','mif1','msf1'].includes(brand)&&!all.includes('isom')&&!all.includes('mp42')){set('heic','image','HEIC/HEIF ('+brand+')');r.details.animated=(brand==='msf1'||brand==='hevc')}
+    else if(brand==='qt  ')set('mov','av','QuickTime MOV');
+    else if(/^3g/.test(brand))set('3gp','av','3GP/3G2 ('+brand+')');
+    else if(brand==='M4A '||brand==='M4B ')set('m4a','av','M4A/M4B（ISOBMFF。映像有無は解析後に判定）');
+    else set('mp4','av','MP4/ISOBMFF (brand '+brand+')');
+  }
+  else if(u32(b,0)===0x1A45DFA3){const s=ascii(b,0,64);if(s.indexOf('webm')>=0)set('webm','av','WebM (EBML)');else if(s.indexOf('matroska')>=0)set('matroska','av','Matroska/MKV (EBML)');else set('matroska','av','EBML (DocType不明)')}
+  else if(ascii(b,0,4)==='OggS'){const s=ascii(b,0,120);let c='不明';
+    if(s.indexOf('OpusHead')>=0)c='Opus';else if(s.indexOf('vorbis')>=0)c='Vorbis';else if(s.indexOf('FLAC')>=0)c='FLAC';else if(s.indexOf('theora')>=0)c='Theora';
+    r.details.firstCodecHint=c;set('ogg',c==='Theora'?'av':'audio','Ogg ('+c+')')}
+  else if(ascii(b,0,4)==='fLaC')set('flac','audio','FLAC');
+  else if(ascii(b,0,4)==='RIFF'&&ascii(b,8,4)==='WAVE'){set('wav','audio','WAV');
+    let p=12;while(p+8<b.length){const id=ascii(b,p,4),sz=u32le(b,p+4);
+      if(id==='fmt '){let tag=u16le(b,p+8);const ch=u16le(b,p+10),sr=u32le(b,p+12),br=u32le(b,p+16),bits=u16le(b,p+22);
+        if(tag===0xFFFE&&sz>=26)tag=u16le(b,p+32);
+        Object.assign(r.details,{formatTag:tag,formatName:{1:'PCM',3:'IEEE float',6:'A-law',7:'μ-law',0x55:'MP3',0x11:'IMA ADPCM',2:'MS ADPCM'}[tag]||('tag 0x'+tag.toString(16)),channels:ch,sampleRate:sr,byteRate:br,bitsPerSample:bits})}
+      if(id==='data'){r.details.dataBytes=sz;break}
+      p+=8+sz+(sz&1)}}
+  else if(ascii(b,0,4)==='RIFF'&&ascii(b,8,4)==='AVI ')set('avi','av','AVI');
+  else if(ascii(b,0,4)==='FORM'&&/AIF[FC]/.test(ascii(b,8,4)))set('aiff','audio','AIFF/AIFC');
+  else if(ascii(b,0,4)==='caff')set('caf','audio','CAF');
+  else if(ascii(b,0,3)==='FLV')set('flv','av','FLV');
+  else if(b[0]===0x30&&b[1]===0x26&&b[2]===0xB2&&b[3]===0x75)set('asf','av','ASF (WMV/WMA)');
+  else if(b[0]===0x0B&&b[1]===0x77)set('ac3','audio','AC-3');
+  else if(u32(b,0)===0x7FFE8001)set('dts','audio','DTS');
+  else if(ascii(b,0,3)==='ID3'){set('mp3','audio','MP3 (ID3タグ付き。本体種別は解析で確認)');r.details.id3=true}
+  else if(b[0]===0xFF&&(b[1]&0xE0)===0xE0){
+    const layer=(b[1]>>1)&3;
+    if(layer===0&&(b[1]&0xF6)===0xF0)set('adts','audio','AAC (ADTS)');else if(layer===1)set('mp3','audio','MP3 (MPEGフレーム)');else set('mp3','audio','MPEG Audio (layer '+(4-layer)+')')}
+  else if(b[0]===0x47&&b[188]===0x47&&b[376]===0x47)set('mpegts','av','MPEG-TS');
+  else if(u32(b,0)===0x000001BA)set('mpegps','av','MPEG-PS');
+  else{const head=new TextDecoder('utf-8',{fatal:false}).decode(b.subarray(0,4096));
+    if(/<svg[\s>]/i.test(head))set('svg','image','SVG（テキスト）')}
+  // 拡張子との照合
+  const ef=EXT_FAM[ext];r.extFamily=ef||null;
+  if(r.family==='unknown'){r.note='シグネチャを認識できない'}
+  else if(ef&&famGroup(ef)!==famGroup(r.family)&&!(ef==='isobmff'&&famGroup(r.family)==='isobmff')){
+    r.mismatch='拡張子(.'+ext+')と実体('+r.label+')が一致しない。実体を優先して検査します'}
+  return r;
+}
+
+/* ============ Mediabunny 解析 ============ */
+function contMimeFor(mime,hasVideo){ // コンテナMIMEを映像/音声に合わせる
+  if(!mime)return null;const base=mime.split(';')[0].trim();
+  return hasVideo?base:base.replace(/^video\//,'audio/');
+}
+async function parseMB(file,rep){
+  const P=rep.parser={lib:'mediabunny',libVersion:MB_VER,attempted:true,ok:false,error:null,container:null,mimeType:null,
+    durationSec:null,durationSource:null,metadataTagKeys:[],tracks:[],note:'Mediabunnyのコンテナ解析対応と、ブラウザの実デコード対応は別物です'};
+  if(!MB){P.attempted=false;P.error='Mediabunny未読込（'+(MBINFO.error||'読込中')+'）';return}
+  const {Input,BlobSource,EncodedPacketSink}=MB;
+  const fm=['MP4','QTFF','MATROSKA','WEBM','OGG','MP3','WAVE','ADTS','FLAC','MPEG_TS'].map(k=>MB[k]).filter(Boolean);
+  const input=new Input({source:new BlobSource(file,{maxCacheSize:8*1048576}),formats:fm});
+  try{
+    const fmt=await input.getFormat();P.container=fmt.name;P.formatMime=fmt.mimeType;
+    try{P.mimeType=await input.getMimeType()}catch(e){}
+    try{const tg=await input.getMetadataTags();P.metadataTagKeys=Object.keys(tg||{}).filter(k=>tg[k]!=null&&tg[k]!=='')}catch(e){}
+    try{const d=await input.getDurationFromMetadata();if(d!=null){P.durationSec=d;P.durationSource='metadata'}}catch(e){}
+    const tracks=await input.getTracks();
+    const hasV=tracks.some(t=>t.isVideoTrack());
+    P.hasVideoTrack=hasV;P.hasAudioTrack=tracks.some(t=>t.isAudioTrack());
+    for(const t of tracks){
+      const T={index:P.tracks.length,id:t.id,kind:t.type};
+      const g=async(k,fn)=>{try{T[k]=await fn()}catch(e){T[k]=null;(T.errors=T.errors||[]).push(k+': '+errStr(e))}};
+      await g('codec',()=>t.getCodec());await g('codecParam',()=>t.getCodecParameterString());
+      await g('language',()=>t.getLanguageCode());
+      await g('bitrate',()=>t.getBitrate());await g('avgBitrate',()=>t.getAverageBitrate());
+      await g('webCodecsCanDecode_mediabunny',()=>t.canDecode());
+      if(P.durationSec==null||true){await g('durationSec',()=>t.getDurationFromMetadata())}
+      if(t.isVideoTrack()){
+        await g('codedWidth',()=>t.getCodedWidth());await g('codedHeight',()=>t.getCodedHeight());
+        await g('displayWidth',()=>t.getDisplayWidth());await g('displayHeight',()=>t.getDisplayHeight());
+        await g('rotation',()=>t.getRotation());await g('flip',()=>t.getFlip());
+        try{T.hasOnlyKeyPackets=await t.hasOnlyKeyPackets()}catch(e){}
+        try{const st=await t.computePacketStats(120);T.fpsSampled=st.averagePacketRate;T.fpsSampleNote='先頭約120 packetからの平均。全体の平均FPSではない';T.sampledBitrate=st.averageBitrate}catch(e){(T.errors=T.errors||[]).push('packetStats: '+errStr(e))}
+        // 先頭N packetのメタデータだけでPTS/VFR/キーフレーム間隔を推定（データ本体は読まない）
+        try{
+          const sink=new EncodedPacketSink(t);let p=await sink.getFirstPacket({metadataOnly:true});const ts=[];const keys=[];
+          while(p&&ts.length<PKT_SAMPLE){ts.push(p.timestamp);keys.push(p.type==='key');p=await sink.getNextPacket(p,{metadataOnly:true})}
+          const sorted=ts.slice().sort((a,b)=>a-b);const d=[];for(let i=1;i<sorted.length;i++)d.push(sorted[i]-sorted[i-1]);
+          const A={ok:ts.length>0,sampledPackets:ts.length,firstTimestampSec:sorted.length?sorted[0]:null,note:'先頭'+PKT_SAMPLE+' packetまでのメタデータからの推定。全フレームPTS表はStep B以降'};
+          if(d.length>=10){const med=d.slice().sort((a,b)=>a-b)[d.length>>1];const dev=d.filter(x=>med>0&&Math.abs(x-med)/med>0.25).length;
+            A.medianDeltaSec=med;A.estimatedFps=med>0?1/med:null;A.deviatingRatio=+(dev/d.length).toFixed(4);A.likelyVfr=dev/d.length>0.05}
+          else A.likelyVfr=null;
+          let last=-1,mx=0;keys.forEach((k,i)=>{if(k){if(last>=0)mx=Math.max(mx,i-last);last=i}});A.maxKeyframeGapPackets=mx||null;A.keyframesSeen=keys.filter(Boolean).length;
+          T.pts=A;
+        }catch(e){T.pts={ok:false,error:errStr(e)}}
+      }else if(t.isAudioTrack()){
+        await g('channels',()=>t.getNumberOfChannels());await g('sampleRate',()=>t.getSampleRate());
+      }
+      // WebCodecsの能力検査のみ（デコードはしない）
+      try{
+        const cfg=await t.getDecoderConfig();
+        if(cfg){const D=t.isVideoTrack()?window.VideoDecoder:window.AudioDecoder;
+          if(D&&D.isConfigSupported){const q=await D.isConfigSupported(cfg);T.webCodecsIsConfigSupported={supported:!!q.supported,codec:cfg.codec}}
+          else T.webCodecsIsConfigSupported={supported:null,note:'WebCodecs未提供'}}
+      }catch(e){T.webCodecsIsConfigSupported={supported:null,error:errStr(e)}}
+      P.tracks.push(T);
+    }
+    if(P.durationSec==null){const ds=P.tracks.map(x=>x.durationSec).filter(x=>x!=null);if(ds.length){P.durationSec=Math.max.apply(null,ds);P.durationSource='track metadata'}}
+    P.contMime=contMimeFor(P.formatMime,hasV);
+    if(!tracks.length){P.ok=false;P.error='コンテナは認識できたがトラックが見つからない（moov欠落・途中で切れた/破損ファイルの可能性）'}
+    else P.ok=true;
+  }catch(e){P.error=errStr(e)}
+  finally{try{input.dispose()}catch(e){}}
+}
+
+/* ============ 能力検査 ============ */
+async function capProbe(rep,file){
+  const C=rep.capabilities={canPlayType:[],mediaCapabilities:[],note:'canPlayType/MediaCapabilitiesは予測であり、再生保証ではありません'};
+  const P=rep.parser,isAud=rep.kind==='audio';
+  const el=document.createElement(isAud?'audio':'video');
+  const cands=new Map();
+  const add=(t,why)=>{if(t&&!cands.has(t))cands.set(t,why)};
+  add(P.mimeType,'解析結果のMIME(codecs付)');add(P.contMime||P.formatMime,'コンテナMIME');
+  if(file.type)add(file.type,'File.type');
+  const implied=['mp3','wav','flac','adts'].includes(rep.sniff.family); // codecがコンテナで自明な形式はcodecs指定なし
+  if(P.ok&&!implied){for(const T of P.tracks){
+    const base=T.kind==='video'?(P.formatMime||'').split(';')[0]:(P.contMime||'audio/mp4');
+    if(T.codecParam&&base)add(base+'; codecs="'+T.codecParam+'"','トラック'+T.index+'('+T.kind+')')}}
+  for(const [t,why] of cands){let r;try{r=el.canPlayType(t)}catch(e){r='error: '+errStr(e)}C.canPlayType.push({type:t,source:why,result:r===''?'(空=不可)':r})}
+  if(!(navigator.mediaCapabilities&&navigator.mediaCapabilities.decodingInfo)){C.mediaCapabilities.push({note:'MediaCapabilities未提供'});return}
+  if(!P.ok)return;
+  const dur=P.durationSec||0;
+  for(const T of P.tracks){
+    const jobs=[];
+    if(T.kind==='video'){
+      const base=(P.formatMime||'video/mp4').split(';')[0];
+      let br=T.bitrate||T.avgBitrate||T.sampledBitrate||(dur?Math.round(file.size*8/dur):0);const assumed=!br;if(!br)br=5000000;
+      const mk=b=>({type:'file',video:{contentType:b+(T.codecParam?'; codecs="'+T.codecParam+'"':''),width:T.codedWidth||0,height:T.codedHeight||0,bitrate:br,framerate:T.fpsSampled||(T.pts&&T.pts.estimatedFps)||30}});
+      jobs.push({cfg:mk(base),assumed});
+      if(base==='video/quicktime')jobs.push({cfg:mk('video/mp4'),assumed,alt:'MOVをmp4コンテナ相当で問合せ（参考）'});
+    }else if(T.kind==='audio'){
+      let br=T.bitrate||T.avgBitrate||(dur?Math.round(file.size*8/dur):0);const assumed=!br;if(!br)br=128000;
+      const base=P.contMime||'audio/mp4';
+      const mk=b=>({type:'file',audio:{contentType:b+((T.codecParam&&!implied)?'; codecs="'+T.codecParam+'"':''),channels:String(T.channels||2),bitrate:br,samplerate:T.sampleRate||44100}});
+      jobs.push({cfg:mk(base),assumed});
+      if(base==='video/quicktime'||(P.formatMime||'')==='video/quicktime')jobs.push({cfg:mk('audio/mp4'),assumed,alt:'MOVをmp4コンテナ相当で問合せ（参考）'});
+    }
+    for(const j of jobs){
+      const q={track:T.index,kind:T.kind,config:j.cfg,inputsEstimated:!!j.assumed||!(T.bitrate||T.avgBitrate),bitrateAssumed:!!j.assumed,alt:j.alt||null};
+      try{const r=await navigator.mediaCapabilities.decodingInfo(j.cfg);q.supported=r.supported;q.smooth=r.smooth;q.powerEfficient=r.powerEfficient}
+      catch(e){q.error=errStr(e)}
+      C.mediaCapabilities.push(q);
+    }
+  }
+}
+
+/* ============ 共通DOM補助 ============ */
+function mediaErr(m){const e=m.error;if(!e)return null;return {code:e.code,name:{1:'MEDIA_ERR_ABORTED',2:'MEDIA_ERR_NETWORK',3:'MEDIA_ERR_DECODE',4:'MEDIA_ERR_SRC_NOT_SUPPORTED'}[e.code]||'?',message:e.message||''}}
+function once(t,ev,msec){return new Promise(res=>{let d=false;const f=()=>{if(d)return;d=true;clearTimeout(tm);t.removeEventListener(ev,f);res(true)};const tm=setTimeout(()=>{if(d)return;d=true;t.removeEventListener(ev,f);res(false)},msec);t.addEventListener(ev,f)})}
+function waitMeta(m,msec){return new Promise(res=>{
+  if(m.readyState>=1)return res({ok:true});
+  let d=false;const fin=o=>{if(d)return;d=true;clearTimeout(tm);m.removeEventListener('loadedmetadata',a);m.removeEventListener('error',b);res(o)};
+  const a=()=>fin({ok:true}),b=()=>fin({ok:false,error:mediaErr(m)}),tm=setTimeout(()=>fin({ok:false,timeout:true,error:mediaErr(m)}),msec);
+  m.addEventListener('loadedmetadata',a);m.addEventListener('error',b)})}
+async function waitUntil(fn,msec){const t=now();while(now()-t<msec){if(fn())return true;await sleep(50)}return !!fn()}
+function thumbOf(src,sw,sh){const s=Math.min(1,THUMB_MAX/Math.max(sw,sh));const c=document.createElement('canvas');c.width=Math.max(1,Math.round(sw*s));c.height=Math.max(1,Math.round(sh*s));c.getContext('2d').drawImage(src,0,0,c.width,c.height);return c}
+function canvasStats(c){try{const x=c.getContext('2d'),w=Math.min(c.width,64),h=Math.min(c.height,64);const d=x.getImageData(0,0,c.width,c.height).data;
+  let mn=255,mx=0,minA=255;for(let i=0;i<d.length;i+=4*Math.max(1,Math.floor(d.length/4/4096))){const l=(d[i]+d[i+1]+d[i+2])/3;mn=Math.min(mn,l);mx=Math.max(mx,l);minA=Math.min(minA,d[i+3])}
+  return {lumaRange:Math.round(mx-mn),minAlpha:minA}}catch(e){return null}}
+
+/* ============ 動画: 実読込・先頭フレーム・シーク ============ */
+async function verifyVideo(it,rep){
+  const V=rep.verify={method:'HTMLVideoElement',loaded:false,events:{},muted:true};
+  const v=document.createElement('video');
+  v.muted=true;v.defaultMuted=true;v.playsInline=true;v.setAttribute('playsinline','');v.setAttribute('muted','');v.preload='auto';v.controls=false;
+  it.pv.replaceChildren(v);
+  const url=mkUrl(it.file),t0=now();const mark=n=>{if(V.events[n]==null)V.events[n]=ms(now()-t0)};
+  ['loadstart','loadedmetadata','loadeddata','canplay'].forEach(n=>v.addEventListener(n,()=>mark(n)));
+  const hasR=typeof v.requestVideoFrameCallback==='function';V.requestVideoFrameCallbackAvailable=hasR;
+  let first=null,rid=null;
+  if(hasR)rid=v.requestVideoFrameCallback((n,m)=>{first={mediaTime:m.mediaTime,presentedFrames:m.presentedFrames,width:m.width,height:m.height};mark('firstFramePresented')});
+  try{
+    v.src=url;
+    const meta=await waitMeta(v,TO.meta);
+    if(!meta.ok){V.error=meta.error||null;V.timeout=!!meta.timeout;V.errorText=meta.timeout?'メタデータ読込がタイムアウト':'要素がエラー';return}
+    V.loaded=true;V.duration=isFinite(v.duration)?v.duration:null;V.videoWidth=v.videoWidth;V.videoHeight=v.videoHeight;
+    if(v.videoWidth===0){V.noVideoTrack=true;V.parserHasVideoTrack=!!(rep.parser&&rep.parser.hasVideoTrack)||!!(rep.parser&&!rep.parser.ok&&String(rep.kindSource).indexOf('推定')>=0);V.videoTrackEstimated=!(rep.parser&&rep.parser.hasVideoTrack);V.note=V.parserHasVideoTrack?(V.videoTrackEstimated?'解析ライブラリなしのため、映像トラックの有無は拡張子/シグネチャからの推定。映像が表示できない（寸法0）':'解析では映像トラックがあるが、ブラウザは映像をデコードできず寸法0（音声のみ再生可能な状態）'):'映像なし（音声のみのファイルとして読込）';return}
+    if(v.readyState<2)await once(v,'loadeddata',TO.loaded);
+    V.readyStateAfterLoad=v.readyState;
+    if(hasR&&!first)await waitUntil(()=>first||v.error,TO.frame);
+    V.firstFrame={method:first?'requestVideoFrameCallback':null};
+    if(!first&&v.readyState>=2&&!v.error){
+      // フォールバック: ミュートで一瞬だけ再生して最初のフレーム提示を促す（最大約1.5秒）
+      V.firstFrame.nudge='muted-play-pause';
+      try{const p=v.play();if(p&&p.catch)p.catch(()=>{});await waitUntil(()=>first||v.currentTime>0,1500)}catch(e){V.firstFrame.nudgeError=errStr(e)}
+      try{v.pause();v.currentTime=0;await once(v,'seeked',2000)}catch(e){}
+      V.firstFrame.method=first?'requestVideoFrameCallback(after nudge)':'readyState>=2 + canvas描画のみ（提示時刻は取得不可）';
+    }
+    V.firstFrame.presentedMediaTime=first?first.mediaTime:null;
+    V.firstFrame.presentedFrames=first?first.presentedFrames:null;
+    V.firstFrame.mediaTimeAvailable=!!first;
+    V.firstFrame.readyState=v.readyState;
+    // 先頭フレームをサムネイルに描画
+    try{const c=thumbOf(v,v.videoWidth,v.videoHeight);const st=canvasStats(c);V.firstFrame.drawn=true;V.firstFrame.pixelStats=st;
+      if(st&&st.lumaRange<3)V.firstFrame.blankWarning='先頭フレームがほぼ単色（実際に黒/単色の映像か、描画失敗か。目視で確認）';
+      it.thumb=c}catch(e){V.firstFrame.drawn=false;V.firstFrame.drawError=errStr(e)}
+    await once(v,'canplay',v.readyState>=3?1:TO.canplay);
+    // シークテスト
+    const dur=V.duration;V.seeks=[];
+    if(dur&&dur>0.5){
+      const fps=(rep.parser.tracks.find(t=>t.kind==='video')||{}).fpsSampled||(((rep.parser.tracks.find(t=>t.kind==='video')||{}).pts)||{}).estimatedFps||30;
+      const tol=Math.max(1.5/fps,0.05);V.seekToleranceSec=+tol.toFixed(4);
+      const targets=dur<2?[dur*0.5]:[dur*0.1,dur*0.5,Math.min(dur*0.9,dur-0.2)];
+      for(const t of targets){
+        const S={requestedSec:+t.toFixed(4)};const ts=now();let fid=null,ftm=null;
+        const fp=hasR?new Promise(res=>{fid=v.requestVideoFrameCallback((n,m)=>res(m));ftm=setTimeout(()=>res(null),TO.seek)}):Promise.resolve(null);
+        const sp=once(v,'seeked',TO.seek);
+        try{v.currentTime=t}catch(e){S.error=errStr(e)}
+        const [sk,fm]=await Promise.all([sp,fp]);
+        if(ftm)clearTimeout(ftm);if(fid!=null&&!fm&&v.cancelVideoFrameCallback)v.cancelVideoFrameCallback(fid);
+        S.seekedFired=sk;S.seekMs=ms(now()-ts);S.currentTimeAfter=+v.currentTime.toFixed(4);
+        S.presentedMediaTime=fm?+fm.mediaTime.toFixed(4):null;
+        S.deltaSec=fm?+(fm.mediaTime-t).toFixed(4):null;
+        S.withinTolerance=fm?Math.abs(fm.mediaTime-t)<=tol:(sk&&Math.abs(v.currentTime-t)<=0.05);
+        S.note='Step Bの予備情報。フレーム精度の保証ではない';
+        V.seeks.push(S);
+        if(!sk)break;
+      }
+    }else V.seekSkipped='duration不明または短すぎる';
+  }finally{
+    try{if(rid!=null&&v.cancelVideoFrameCallback)v.cancelVideoFrameCallback(rid)}catch(e){}
+    try{v.pause()}catch(e){}v.removeAttribute('src');try{v.load()}catch(e){}v.remove();rmUrl(url);
+    V.totalMs=ms(now()-t0);
+  }
+}
+
+/* ============ 画像 ============ */
+async function verifyImage(it,rep){
+  const V=rep.verify={method:'HTMLImageElement.decode() + createImageBitmap()',loaded:false,decodedOk:false};
+  const f=it.file;const isSvg=rep.sniff.family==='svg'||getExt(f.name)==='svg';
+  const blob=(isSvg&&f.type!=='image/svg+xml')?new Blob([f],{type:'image/svg+xml'}):f; // SVGは<img>でのみ使用。DOMへ挿入しない
+  const url=mkUrl(blob),t0=now();const img=new Image();let bmp=null;
+  try{
+    img.decoding='async';img.src=url;
+    try{
+      if(typeof img.decode==='function'){await Promise.race([img.decode(),new Promise((_,rj)=>setTimeout(()=>rj(new Error('decode timeout')),TO.imgDecode))]);V.decodeApi='img.decode()'}
+      else{await new Promise((res,rj)=>{img.onload=res;img.onerror=()=>rj(new Error('load error'))});V.decodeApi='img load event'}
+    }catch(e){
+      V.decodeError=errStr(e);
+      if(isSvg||!img.complete){ // SVGはdecode()が失敗してもloadできる場合がある
+        const ok=await new Promise(res=>{if(img.complete&&img.naturalWidth>0)return res(true);img.onload=()=>res(true);img.onerror=()=>res(false);setTimeout(()=>res(false),3000)});
+        if(ok){V.decodeApi='img load event（decode()失敗後）'}
+      }
+    }
+    V.naturalWidth=img.naturalWidth;V.naturalHeight=img.naturalHeight;
+    V.decodedOk=img.complete&&img.naturalWidth>0&&img.naturalHeight>0;
+    V.loaded=V.decodedOk;
+    if(isSvg){V.bitmap={ok:null,note:'SVGはcreateImageBitmap非対応のブラウザが多いため<img>のみで検査'}}
+    else if(typeof createImageBitmap==='function'){
+      try{bmp=await createImageBitmap(f);V.bitmap={ok:true,width:bmp.width,height:bmp.height}}catch(e){V.bitmap={ok:false,error:errStr(e)}}
+    }else V.bitmap={ok:null,note:'createImageBitmap未提供'};
+    if(!V.decodedOk&&V.bitmap&&V.bitmap.ok)V.note='imgでは表示不可だがcreateImageBitmapは成功';
+    const w=V.naturalWidth||(bmp&&bmp.width),h=V.naturalHeight||(bmp&&bmp.height);
+    if(w&&h){V.megapixels=+(w*h/1e6).toFixed(2);V.decodedBytesEstimate=w*h*4;
+      if(w*h>40e6)V.sizeWarning='大きな画像（約'+fmtBytes(w*h*4)+'のデコード）。iPadでは複数枚の同時保持に注意'}
+    const eo=rep.sniff.details.exifOrientation;
+    if(eo!=null){V.exifOrientation=eo;
+      const rw=rep.sniff.details.rawWidth,rh=rep.sniff.details.rawHeight;V.rawSofSize=rw?rw+'×'+rh:null;
+      if(eo>=5&&eo<=8&&rw&&V.naturalWidth&&rw!==rh){
+        V.orientationAppliedByBrowser=(V.naturalWidth===rh&&V.naturalHeight===rw);
+        V.orientationNote=V.orientationAppliedByBrowser?'ブラウザがEXIF向きを自動適用済み。CSS等で再回転しないこと（二重回転防止）':'EXIF向きが寸法に反映されていない。アプリ側で回転処理が必要な可能性';
+      }else if(eo>=5&&eo<=8){V.orientationNote='正方形または判定材料不足のため自動適用の有無は不明'}
+      else V.orientationNote=eo>1?'回転なし(上下/左右反転のみ)の向き値':'標準の向き'}
+    if(V.decodedOk){
+      try{const c=thumbOf(img,img.naturalWidth,img.naturalHeight);const st=canvasStats(c);it.thumb=c;V.displayed=true;V.pixelStats=st;
+        V.observedTransparency=!!(st&&st.minAlpha<255)}catch(e){V.displayed=false;V.drawError=errStr(e)}
+    }
+  }finally{
+    try{img.src=''}catch(e){}if(bmp)bmp.close();rmUrl(url);V.totalMs=ms(now()-t0);
+  }
+}
+
+/* ============ 音声 ============ */
+async function verifyAudioMeta(it,rep){
+  const V=rep.verify={method:'HTMLAudioElement',loaded:false,events:{},playbackTest:'not-run'};
+  const a=new Audio();a.preload='auto';a.muted=false;const url=mkUrl(it.file),t0=now();
+  const mark=n=>{if(V.events[n]==null)V.events[n]=ms(now()-t0)};['loadstart','loadedmetadata','loadeddata','canplay'].forEach(n=>a.addEventListener(n,()=>mark(n)));
+  try{
+    a.src=url;const m=await waitMeta(a,TO.meta);
+    if(!m.ok){V.error=m.error||null;V.timeout=!!m.timeout;return}
+    V.loaded=true;V.duration=isFinite(a.duration)?a.duration:null;
+    const c=await once(a,'canplay',a.readyState>=3?1:TO.canplay);
+    V.canplayFired=c||a.readyState>=3;
+    if(!V.canplayFired)V.canplayNote='canplay未発火（iPad等は操作前に先読みしない場合あり。失敗とは限らない）';
+  }finally{a.pause();a.removeAttribute('src');try{a.load()}catch(e){}rmUrl(url);V.totalMs=ms(now()-t0)}
+}
+let listen=null;
+function stopListen(){
+  if(!listen)return;const L=listen;listen=null;clearTimeout(L.timer);clearInterval(L.poll);
+  try{L.a.pause()}catch(e){}L.a.removeAttribute('src');try{L.a.load()}catch(e){}rmUrl(L.url);
+  L.it.listening=false;
+  const V=L.it.report.verify;V.listenEndedMs=ms(now()-L.t0);
+  if(V.playbackTest==='running'){V.playbackTest=L.progressed?'ok':'failed';if(!L.progressed&&!V.playError)V.playError='再生位置が進まなかった'}
+  finalize(L.it.report);render(L.it);
+}
+function startListen(it){ // クリックハンドラ内で同期的に呼ぶ（iOSのユーザー操作要件）
+  stopListen();
+  const rep=it.report,V=rep.verify;const a=new Audio();a.preload='auto';const url=mkUrl(it.file);
+  const L=listen={it,a,url,t0:now(),progressed:false,timer:null,poll:null};
+  V.playbackTest='running';V.playbackStartedByUser=true;V.listenLimitMs=LISTEN_MS;it.listening=true;a.src=url;
+  const p=a.play();
+  if(p&&p.then)p.then(()=>{V.playStarted=true},e=>{V.playError=errStr(e);if(listen===L)stopListen()});
+  L.poll=setInterval(()=>{if(a.currentTime>0.25){L.progressed=true;V.currentTimeReached=+a.currentTime.toFixed(3)}},100);
+  L.timer=setTimeout(()=>{if(listen===L){V.currentTimeReached=+a.currentTime.toFixed(3);if(a.currentTime>0.25)L.progressed=true;stopListen()}},LISTEN_MS);
+  a.addEventListener('error',()=>{V.playError=JSON.stringify(mediaErr(a));if(listen===L)stopListen()},{once:true});
+  a.addEventListener('ended',()=>{if(listen===L){L.progressed=L.progressed||a.currentTime>0.1;stopListen()}},{once:true});
+  render(it);
+}
+
+/* WAVの補足（パーサーが取得できる範囲） */
+function wavExtras(rep){const d=rep.sniff.details;if(rep.sniff.family!=='wav'||d.channels==null)return null;
+  return {formatName:d.formatName,channels:d.channels,sampleRate:d.sampleRate,bitsPerSample:d.bitsPerSample,byteRateBitrate:d.byteRate*8,
+    durationFromHeaderSec:(d.dataBytes&&d.byteRate)?d.dataBytes/d.byteRate:null,source:'WAVヘッダ(fmt/data)を直接解析'}}
+
+/* ============ 判定 ============ */
+const ST_TEXT={'native-ready':'標準経路で実際に表示/再生を確認','native-limited':'動作するが制限あり','proxy-ready':'（予約・今回は未実装）','conversion-required':'直接処理できず変換が必要','unsupported':'この環境では処理できない','probe-failed':'破損・解析失敗・読込エラー','awaiting-user-playback':'試聴待ち（「音を確認」を押すと確定）'};
+function finalize(rep){
+  const P=rep.parser||{},V=rep.verify||{},lim=[];const fam=rep.sniff.family;
+  const D=rep.diagnosis={recognized:fam!=='unknown',parsed:P.attempted?P.ok:null,browserLoaded:V.loaded===undefined?null:V.loaded,
+    firstFramePresented:null,ptsFromParser:null,ptsPresentedByBrowser:null,embeddedAudioTrackDetected:null,playback:null};
+  let st,code,text;
+  const parseFailText=()=>P.attempted?('解析ライブラリが読めない: '+P.error):'解析ライブラリ未使用（標準APIのみ）';
+  if(rep.kind==='video'){
+    const vt=(P.tracks||[]).filter(t=>t.kind==='video'),at=(P.tracks||[]).filter(t=>t.kind==='audio');
+    D.embeddedAudioTrackDetected=P.ok?at.length>0:null;
+    D.ptsFromParser=P.ok?(vt.some(t=>t.pts&&t.pts.ok)?'ok':'unavailable'):null;
+    if(!V.loaded){
+      if(P.ok){st='conversion-required';code='browser-cannot-decode';text='コンテナは解析できたが、このブラウザは読み込み/デコードできない'+(V.error?'（'+V.error.name+'）':V.timeout?'（タイムアウト）':'')}
+      else if(PARSEABLE.has(fam)){st='probe-failed';code='parse-failed';text='解析もブラウザ読込も失敗。破損または非標準ファイルの可能性。'+parseFailText()}
+      else if(fam!=='unknown'){st='conversion-required';code='browser-cannot-decode';text=rep.sniff.label+'は認識できたが、解析もブラウザ再生もできない。将来の変換経路が必要'}
+      else{st='unsupported';code='unrecognized-format';text='形式を認識できず、ブラウザも読み込めない'}
+    }else if(V.noVideoTrack&&V.parserHasVideoTrack){st='conversion-required';code='browser-cannot-decode';text='映像トラックは解析できたが、このブラウザは映像をデコードできない（音声だけ読み込まれた）。映像コーデック: '+((vt[0]&&vt[0].codec)||UNK)}
+    else if(V.noVideoTrack){st='native-limited';code='no-video-track';text='映像トラックが無い（音声のみ）として読み込まれた';lim.push('映像なし')}
+    else{
+      const ff=V.firstFrame||{};D.firstFramePresented=ff.mediaTimeAvailable?true:(ff.drawn?'drawn-only':false);
+      D.ptsPresentedByBrowser=ff.mediaTimeAvailable?'ok':'unavailable';
+      D.playback='not-tested-in-step-a(muted preview only)';
+      if(!ff.drawn&&!ff.mediaTimeAvailable){st='conversion-required';code='browser-cannot-decode';text='メタデータは読めたが映像フレームを表示できなかった'}
+      else{
+        if(!ff.mediaTimeAvailable)lim.push('提示フレームの時刻(mediaTime)が取得できない（rVFC未対応/未発火）。PTS確認不可');
+        const bad=(V.seeks||[]).filter(s=>!s.seekedFired||!s.withinTolerance);
+        if(bad.length)lim.push('シークテストで'+bad.length+'/'+V.seeks.length+'件が許容差を超えた/未完了');
+        const mc=(rep.capabilities.mediaCapabilities||[]).filter(q=>q.kind==='video'&&q.supported===true);
+        if(mc.some(q=>q.smooth===false))lim.push('MediaCapabilities: smooth=false（滑らかな再生が見込めない）');
+        if(vt.some(t=>t.pts&&t.pts.likelyVfr))lim.push('VFRの可能性（フレーム位置は平均FPSでなくPTSで扱う必要あり。VFRではシーク差が出やすい）');
+        if(at.length){const ct=rep.capabilities.canPlayType.find(c=>/codecs=.*,/.test(c.type));if(ct&&ct.result.indexOf('空')>=0)lim.push('内蔵音声コーデックを含む組合せがcanPlayType不可（音声が再生できない可能性）')}
+        if(!P.ok)lim.push('解析ライブラリで詳細メタデータを取得できず（'+parseFailText()+'）');
+        const v0=vt[0];if(v0&&v0.displayWidth&&V.videoWidth&&(V.videoWidth!==v0.displayWidth||V.videoHeight!==v0.displayHeight))rep.warnings.push('要素の寸法('+V.videoWidth+'×'+V.videoHeight+')が解析の表示サイズ('+v0.displayWidth+'×'+v0.displayHeight+')と異なる。回転の二重適用/未適用・画素アスペクト比を確認');
+        if(ff.blankWarning)rep.warnings.push(ff.blankWarning);
+        st=lim.length?'native-limited':'native-ready';code=lim.length?'ok-with-limits':'ok';
+        text=lim.length?'表示・シークは動作したが制限あり':'メタデータ読込・先頭フレーム表示・シークを確認（フレーム精度は未検証=Step B）';
+      }
+    }
+  }else if(rep.kind==='image'){
+    const I=V;
+    if(I.decodedOk&&I.displayed!==false){
+      const an=rep.sniff.details.animated;
+      if(an===true||fam==='gif'&&rep.gifFrames&&rep.gifFrames.frames>1){lim.push('アニメーション画像。先頭フレームの静止画としてのみ表示（アニメーションは保持しない）')}
+      else if(fam==='gif'&&!rep.gifFrames)lim.push('GIF：アニメーションか否か未確定。静止画（先頭フレーム）として扱う');
+      if(I.bitmap&&I.bitmap.ok===false)rep.warnings.push('createImageBitmapは失敗: '+I.bitmap.error);
+      if(I.orientationNote&&/不明|必要/.test(I.orientationNote))lim.push(I.orientationNote);
+      if(I.sizeWarning)rep.warnings.push(I.sizeWarning);
+      st=lim.length?'native-limited':'native-ready';code=lim.length?'ok-with-limits':'ok';text=lim.length?'表示できたが制限あり':'実際にデコードして表示できた';
+    }else if(I.bitmap&&I.bitmap.ok&&!I.decodedOk){st='native-limited';code='img-element-failed';text='<img>では表示不可だがcreateImageBitmapは成功';lim.push('imgで表示不可')}
+    else if(['jpeg','png','gif','webp','svg'].includes(fam)){st='probe-failed';code='decode-error';text=rep.sniff.label+'のはずだがデコードに失敗。破損の可能性（'+(I.decodeError||'')+'）'}
+    else if(fam!=='unknown'){st='conversion-required';code='browser-cannot-decode';text=rep.sniff.label+'は認識できたが、このブラウザはデコードできない（'+(I.decodeError||'')+'）'}
+    else{st='unsupported';code='unrecognized-format';text='画像として認識・デコードできない'}
+    D.browserLoaded=!!I.decodedOk;D.firstFramePresented=I.displayed===true;
+  }else if(rep.kind==='audio'){
+    D.embeddedAudioTrackDetected=false;
+    const at=(P.tracks||[]).filter(t=>t.kind==='audio');
+    if(!V.loaded){
+      if(P.ok){st='conversion-required';code='browser-cannot-decode';text='コンテナ/コーデックは解析できたが、このブラウザは再生できない'+(V.error?'（'+V.error.name+'）':'')}
+      else if(PARSEABLE.has(fam)){st='probe-failed';code='parse-failed';text='解析もブラウザ読込も失敗。破損の可能性。'+parseFailText()}
+      else if(fam!=='unknown'){st='conversion-required';code='browser-cannot-decode';text=rep.sniff.label+'は認識できたが再生できない。将来の変換経路が必要'}
+      else{st='unsupported';code='unrecognized-format';text='形式を認識できず、ブラウザも読み込めない'}
+    }else if(V.playbackTest==='not-run'||V.playbackTest==='running'){
+      st='awaiting-user-playback';code='awaiting-playback';text='メタデータ読込OK。「音を確認」を押すと実再生で確定します'}
+    else if(V.playbackTest==='failed'){st='conversion-required';code='playback-failed';text='メタデータは読めたが、実再生に失敗/進行しなかった（'+(V.playError||'')+'）'}
+    else{
+      if(V.userHeard===false)lim.push('利用者が「聞こえない」と回答（消音スイッチ・音量・出力先も要確認）');
+      if(!P.ok)lim.push('解析ライブラリでcodec等を取得できず');
+      if(at.some(t=>(t.channels||0)>2))lim.push('3ch以上（初期ミキサーでは要ダウンミックス）');
+      st=lim.length?'native-limited':'native-ready';code=lim.length?'ok-with-limits':'ok';
+      text=(lim.length?'再生は進行したが制限あり':'ユーザー操作で再生が進行した')+(V.userHeard==null?'（可聴性は未回答）':'');
+    }
+    D.playback=V.playbackTest;D.browserLoaded=!!V.loaded;
+  }else{st='unsupported';code='unrecognized-format';text='種別を判定できず、メディアとして扱えない'}
+  rep.status=st;rep.statusLabel=ST_TEXT[st];rep.reasonCode=code;rep.reasonText=text;rep.limitations=lim;
+}
+
+/* ============ 1ファイルの検査 ============ */
+function pickKind(rep,file){
+  const P=rep.parser,s=rep.sniff;
+  if(P&&P.ok){if(P.hasVideoTrack)return ['video','解析結果（映像トラックあり）'];if(P.hasAudioTrack)return ['audio','解析結果（音声トラックのみ）']}
+  if(IMG_FAM.has(s.family))return ['image','シグネチャ'];
+  if(AUD_FAM.has(s.family))return ['audio','シグネチャ'];
+  if(s.family==='ogg'&&s.kind==='audio')return ['audio','シグネチャ(Ogg音声)'];
+  const mt=(file.type||'').split('/')[0],ext=getExt(file.name);
+  if(s.kind==='av'){if(mt==='audio'||AUDIO_EXT.has(ext))return ['audio','MIME/拡張子からの推定（解析不可のため）'];return ['video','シグネチャ(コンテナ)+拡張子からの推定']}
+  if(['video','audio','image'].includes(mt))return [mt,'File.type（シグネチャ不明）'];
+  return ['unknown','判定材料なし'];
+}
+async function inspect(it){
+  const f=it.file,rep=it.report={id:it.id,file:{name:f.name,sizeBytes:f.size,extension:getExt(f.name),mimeType:f.type||null},
+    sniff:null,kind:null,kindSource:null,parser:null,capabilities:null,verify:null,diagnosis:null,
+    status:'running',statusLabel:'',reasonCode:null,reasonText:null,limitations:[],warnings:[],errors:[],timingsMs:{}};
+  const T=rep.timingsMs,t0=now();let t=now();
+  try{
+    rep.sniff=await sniff(f);T.sniff=ms(now()-t);
+    if(rep.sniff.mismatch)rep.warnings.push(rep.sniff.mismatch);
+    if(rep.sniff.family==='gif'){try{rep.gifFrames=await gifFrames(f)}catch(e){}}
+    const needParse=['av','audio'].includes(rep.sniff.kind)||rep.sniff.kind==='unknown'&&(f.type.startsWith('video/')||f.type.startsWith('audio/')||EXT_FAM[getExt(f.name)]&&!IMG_FAM.has(EXT_FAM[getExt(f.name)]));
+    t=now();
+    if(needParse){it.stage='コンテナ解析中';render(it);await parseMB(f,rep)}
+    else rep.parser={lib:'mediabunny',attempted:false,ok:null,note:'画像は解析ライブラリ不要（シグネチャ+実デコードで検査）'};
+    T.parse=ms(now()-t);
+    [rep.kind,rep.kindSource]=pickKind(rep,f);
+    if(rep.parser&&rep.parser.ok===false&&rep.parser.attempted)rep.warnings.push('解析できない: '+rep.parser.error);
+    if(rep.kind==='audio'&&rep.sniff.family==='wav'){rep.wavHeader=wavExtras(rep)}
+    t=now();
+    if(rep.kind==='video'||rep.kind==='audio'){it.stage='ブラウザ能力検査中';render(it);await capProbe(rep,f)}
+    else rep.capabilities={canPlayType:[],mediaCapabilities:[],note:'画像はcanPlayType/MediaCapabilities対象外'};
+    T.capabilities=ms(now()-t);t=now();
+    it.stage='実読込・表示検証中';render(it);
+    if(rep.kind==='video')await verifyVideo(it,rep);
+    else if(rep.kind==='image')await verifyImage(it,rep);
+    else if(rep.kind==='audio')await verifyAudioMeta(it,rep);
+    T.verify=ms(now()-t);
+  }catch(e){rep.errors.push('検査中の例外: '+errStr(e));rep.reasonCode='exception'}
+  T.total=ms(now()-t0);
+  if(rep.errors.length&&!rep.verify){rep.status='probe-failed';rep.statusLabel=ST_TEXT['probe-failed'];rep.reasonText=rep.errors[0]}
+  else finalize(rep);
+  it.stage='';render(it);
+}
+
+/* ============ キュー（1ファイルずつ） ============ */
+const items=[];let seq=0,busy=false;
+function addFiles(fl){for(const f of fl){const it={id:'f'+(++seq),file:f,thumb:null,pv:document.createElement('div'),stage:'待機中',report:{id:'f'+seq,file:{name:f.name,sizeBytes:f.size,extension:getExt(f.name),mimeType:f.type||null},status:'queued'}};
+  it.pv.className='pvwrap';items.push(it);const c=document.createElement('div');c.className='card';c.id='c-'+it.id;it.node=c;$('#list').appendChild(c);render(it)}
+  pump()}
+async function pump(){if(busy)return;busy=true;
+  try{for(;;){const it=items.find(x=>x.report.status==='queued');if(!it)break;it.report.status='running';await inspect(it)}}finally{busy=false}}
+function removeItem(id){const i=items.findIndex(x=>x.id===id);if(i<0)return;const it=items[i];if(listen&&listen.it===it)stopListen();
+  if(it.report.status==='running'){return}
+  it.node.remove();it.thumb=null;it.pv.replaceChildren();items.splice(i,1)}
+function rerun(id){const it=items.find(x=>x.id===id);if(!it||it.report.status==='running')return;if(listen&&listen.it===it)stopListen();
+  it.thumb=null;it.pv.replaceChildren();it.report={id:it.id,file:it.report.file,status:'queued'};it.stage='待機中';render(it);pump()}
+
+/* ============ 表示 ============ */
+const kv=(l,v)=>'<tr><td>'+esc(l)+'</td><td>'+((v==null||v==='')?'<span class="unk">'+UNK+'</span>':esc(v))+'</td></tr>';
+const tbl=rows=>'<table class="kv">'+rows.join('')+'</table>';
+const chip=(l,v)=>'<span class="chip '+(v===true||v==='ok'?'y':v===false?'n':'u')+'">'+(v===true||v==='ok'?'✔ ':v===false?'✖ ':'– ')+esc(l)+'</span>';
+function yn(v){return v===true?'はい':v===false?'いいえ':null}
+function render(it){
+  const r=it.report,c=it.node;if(!c)return;
+  const st=r.status||'queued';
+  let h='<div class="hd"><div><div class="nm">'+esc(r.file.name)+'</div><small>'+esc(fmtBytes(r.file.sizeBytes))+' ・ .'+esc(r.file.extension||'?')+' ・ '+esc(r.file.mimeType||'MIMEなし')+'</small></div><div><span class="badge b-'+esc(st)+'">'+esc(st==='running'?(it.stage||'検査中'):st==='queued'?'待機中':st)+'</span></div></div>';
+  if(st==='queued'||st==='running'){c.innerHTML=h+'<div class="pvwrap-slot"></div>';c.querySelector('.pvwrap-slot').replaceWith(it.pv);return}
+  const D=r.diagnosis||{};
+  h+='<div><b>'+esc(r.statusLabel)+'</b><br><small>'+esc(r.reasonText||'')+' <span class="sub">[reason: '+esc(r.reasonCode)+']</span></small></div>';
+  h+='<div class="chips">'+chip('形式を認識',D.recognized)+chip('コンテナ解析',D.parsed===null||D.parsed===undefined?'u':D.parsed)+chip('ブラウザが読込',D.browserLoaded)+
+     (r.kind==='video'?chip('先頭フレーム表示',D.firstFramePresented===true?true:D.firstFramePresented===false?false:'u')+chip('提示PTS取得',D.ptsPresentedByBrowser==='ok'?true:D.ptsPresentedByBrowser==='unavailable'?false:'u')+chip('パーサPTS',D.ptsFromParser==='ok'?true:D.ptsFromParser==='unavailable'?false:'u')+chip('内蔵音声トラック検出',D.embeddedAudioTrackDetected===null||D.embeddedAudioTrackDetected===undefined?'u':D.embeddedAudioTrackDetected):'')+
+     (r.kind==='audio'?chip('実再生',r.verify&&r.verify.playbackTest==='ok'?true:r.verify&&r.verify.playbackTest==='failed'?false:'u'):'')+'</div>';
+  h+='<div class="pvslot"></div>';
+  h+=renderBody(it,r);
+  c.innerHTML=h;
+  const slot=c.querySelector('.pvslot');
+  if(it.thumb&&it.pv.firstChild!==it.thumb){it.pv.replaceChildren(it.thumb)}
+  slot.replaceWith(it.pv);
+}
+function renderBody(it,r){
+  let h='';const S=r.sniff||{},P=r.parser||{},V=r.verify||{},C=r.capabilities||{};
+  // 操作
+  h+='<div class="row">';
+  if(r.kind==='audio'&&V.loaded){
+    if(it.listening)h+='<button data-act="stop" data-id="'+it.id+'">■ 停止</button>';
+    else h+='<button data-act="listen" data-id="'+it.id+'">▶ 音を確認（最大'+(LISTEN_MS/1000)+'秒）</button>';
+    if(V.playbackTest==='ok')h+='<button class="sec" data-act="heard" data-id="'+it.id+'">聞こえた</button><button class="sec" data-act="nothear" data-id="'+it.id+'">聞こえない</button>';
+  }
+  h+='<button class="sec" data-act="rerun" data-id="'+it.id+'">再検査</button><button class="sec" data-act="remove" data-id="'+it.id+'">削除</button></div>';
+  if(r.kind==='audio'&&V.playbackTest==='ok')h+='<small>聞こえたか回答すると記録されます（未回答でも可）。'+(V.userHeard==null?'':'回答: '+(V.userHeard?'聞こえた':'聞こえない'))+'</small>';
+  // 1 判別
+  h+='<details open><summary>① ファイル判別（拡張子・MIME・シグネチャ）</summary>'+tbl([
+    kv('検出した種類',r.kind+'（'+r.kindSource+'）'),kv('シグネチャ判定',S.label),kv('拡張子→形式',S.extFamily),
+    kv('ftyp brand',S.details&&S.details.brand),kv('EXIF Orientation',S.details&&S.details.exifOrientation),
+    kv('ヘッダ上のアルファ',S.details&&S.details.headerAlpha!=null?yn(S.details.headerAlpha):null),
+    kv('アニメーション(ヘッダ)',S.details&&S.details.animated!=null?yn(S.details.animated):(r.gifFrames?(r.gifFrames.frames>1?'はい(2フレーム以上)':(r.gifFrames.complete?'いいえ(1フレーム)':'未確定')):null)),
+    r.wavHeader?kv('WAVヘッダ',r.wavHeader.formatName+' / '+r.wavHeader.bitsPerSample+'bit / '+r.wavHeader.channels+'ch / '+r.wavHeader.sampleRate+'Hz'):'',
+    S.mismatch?'<tr><td class="warn">不一致</td><td class="warn">'+esc(S.mismatch)+'</td></tr>':''
+  ])+'</details>';
+  // 2 解析
+  if(P.attempted!==false||P.error){
+    h+='<details open><summary>② 解析結果（Mediabunny '+esc(MB_VER)+'・コンテナ解析のみ。デコード可否ではない）</summary>';
+    if(P.ok){
+      h+=tbl([kv('コンテナ',P.container),kv('MIME(解析)',P.mimeType),kv('長さ',P.durationSec!=null?fmtDur(P.durationSec)+' ['+P.durationSource+']':null),
+        kv('メタデータタグ(キー名のみ)',P.metadataTagKeys.length?P.metadataTagKeys.join(', '):'なし')]);
+      if(!P.tracks.length)h+='<small class="warn">トラックが見つからない</small>';
+      for(const T of P.tracks){
+        const emb=r.kind==='video'&&T.kind==='audio';
+        h+='<div class="trk '+(T.kind==='audio'?'aud':'')+'"><b>'+(T.kind==='video'?'映像トラック':(emb?'動画内蔵の音声トラック':'独立音声ファイルの音声トラック'))+' #'+T.index+'</b>';
+        const rows=[kv('codec',T.codec),kv('codec文字列',T.codecParam),kv('言語',T.language==='und'?null:T.language),kv('bitrate(メタデータ)',T.bitrate!=null?Math.round(T.bitrate/1000)+' kbps':null),kv('平均bitrate',T.avgBitrate!=null?Math.round(T.avgBitrate/1000)+' kbps':null)];
+        if(T.kind==='video'){
+          rows.push(kv('符号化サイズ',T.codedWidth?T.codedWidth+'×'+T.codedHeight:null),kv('表示サイズ(解析)',T.displayWidth?T.displayWidth+'×'+T.displayHeight:null),kv('回転',T.rotation!=null?T.rotation+'°'+(T.flip?' +反転':''):null),
+            kv('FPS（先頭サンプル）',T.fpsSampled!=null?T.fpsSampled.toFixed(3):null));
+          const p=T.pts;if(p&&p.ok){rows.push(kv('PTS先頭(解析)',p.firstTimestampSec+'s'),kv('サンプルpacket数',p.sampledPackets),kv('間隔中央値→FPS推定',p.estimatedFps?p.estimatedFps.toFixed(3):null),kv('VFR推定',p.likelyVfr===null?'判定不能(サンプル不足)':(p.likelyVfr?'VFRの可能性あり':'CFRらしい')+'（外れ値率 '+p.deviatingRatio+'）'),kv('最大キーフレーム間隔(packet)',p.maxKeyframeGapPackets))}
+          else rows.push(kv('PTS情報(解析)','取得不可'+(p&&p.error?': '+p.error:'')));
+        }else{rows.push(kv('チャンネル数',T.channels),kv('サンプルレート',T.sampleRate?T.sampleRate+' Hz':null),kv('ビット深度',r.wavHeader?r.wavHeader.bitsPerSample+' bit(WAVヘッダ)':null))}
+        rows.push(kv('WebCodecs isConfigSupported',T.webCodecsIsConfigSupported?(T.webCodecsIsConfigSupported.supported===null?'未提供/不明':String(T.webCodecsIsConfigSupported.supported)):null));
+        if(T.errors)rows.push('<tr><td class="warn">取得エラー</td><td class="warn">'+esc(T.errors.join(' / '))+'</td></tr>');
+        h+=tbl(rows)+'</div>';
+      }
+    }else h+='<div class="err">'+esc(P.error||'解析できなかった')+'</div><small>解析不可でも、ブラウザが読めるかは④で別途検査しています。</small>';
+    h+='</details>';
+  }
+  // 3 能力
+  if(r.kind==='video'||r.kind==='audio'){
+    h+='<details><summary>③ ブラウザ能力（予測のみ。再生保証ではない）</summary>';
+    h+='<b>canPlayType</b>'+tbl((C.canPlayType||[]).map(x=>kv(x.type+' ['+x.source+']',x.result)));
+    h+='<b>MediaCapabilities.decodingInfo</b>'+tbl((C.mediaCapabilities||[]).map(q=>kv('トラック#'+(q.track!=null?q.track:'-')+' '+(q.kind||'')+(q.alt?' ['+q.alt+']':''),q.error?'エラー: '+q.error:q.note?q.note:'supported='+q.supported+' / smooth='+q.smooth+' / powerEfficient='+q.powerEfficient+(q.inputsEstimated?' （bitrate/fps等に推定値を使用）':''))));
+    h+='</details>';
+  }
+  // 4 実検証
+  h+='<details open><summary>④ 実際の読込・表示・再生の結果</summary>';
+  if(r.kind==='video'){
+    const ff=V.firstFrame||{};
+    h+=tbl([kv('読込(loadedmetadata)',yn(V.loaded)),kv('イベント(ms)',Object.entries(V.events||{}).map(e=>e[0]+':'+e[1]).join(' ')),kv('要素の寸法',V.videoWidth?V.videoWidth+'×'+V.videoHeight:null),kv('duration(要素)',V.duration!=null?fmtDur(V.duration):null),
+      kv('先頭フレーム取得方式',ff.method),kv('提示mediaTime',ff.presentedMediaTime!=null?ff.presentedMediaTime+'s':(V.loaded?'取得不可':null)),kv('canvas描画',ff.drawn!=null?yn(ff.drawn):null),
+      V.error?kv('エラー',JSON.stringify(V.error)):'',V.timeout?kv('タイムアウト','はい'):'',ff.blankWarning?'<tr><td class="warn">注意</td><td class="warn">'+esc(ff.blankWarning)+'</td></tr>':'']);
+    if(V.seeks&&V.seeks.length)h+='<b>シークテスト（許容 ±'+V.seekToleranceSec+'s・Step B予備情報）</b>'+tbl(V.seeks.map(s=>kv('要求 '+s.requestedSec+'s','提示 '+(s.presentedMediaTime==null?'取得不可':s.presentedMediaTime+'s (差 '+s.deltaSec+'s)')+' / seeked='+yn(s.seekedFired)+' / '+s.seekMs+'ms / '+(s.withinTolerance?'許容内':'許容外'))));
+    h+='<small>動画内蔵音声の再生確認はStep Aでは行いません（映像はミュート）。</small>';
+  }else if(r.kind==='image'){
+    h+=tbl([kv('デコード方式',V.decodeApi),kv('img表示成功',yn(V.decodedOk)),kv('寸法(img)',V.naturalWidth?V.naturalWidth+'×'+V.naturalHeight:null),kv('createImageBitmap',V.bitmap?(V.bitmap.ok?'成功 '+V.bitmap.width+'×'+V.bitmap.height:V.bitmap.ok===false?'失敗: '+V.bitmap.error:V.bitmap.note):null),
+      kv('メガピクセル',V.megapixels),kv('EXIF向き',V.exifOrientation),kv('向きの扱い',V.orientationNote),
+      kv('透過(ヘッダ宣言)',S.details&&S.details.headerAlpha!=null?yn(S.details.headerAlpha):null),kv('透過(サムネイルで観測)',V.observedTransparency!=null?yn(V.observedTransparency):null),
+      V.decodeError?kv('decodeエラー',V.decodeError):'']);
+    if(r.sniff.family==='gif'||(S.details&&S.details.animated))h+='<small class="warn">表示は先頭フレームの静止画です。アニメーションは保持しません。</small>';
+    h+='<small>プレビューは縮小サムネイルです（元画像のフルデコードは検査後に破棄）。</small>';
+  }else if(r.kind==='audio'){
+    h+=tbl([kv('読込(loadedmetadata)',yn(V.loaded)),kv('canplay',V.canplayFired!=null?yn(V.canplayFired):null),kv('イベント(ms)',Object.entries(V.events||{}).map(e=>e[0]+':'+e[1]).join(' ')),kv('duration(要素)',V.duration!=null?fmtDur(V.duration):null),
+      kv('実再生テスト',V.playbackTest),kv('再生到達位置',V.currentTimeReached!=null?V.currentTimeReached+'s':null),kv('可聴(利用者回答)',V.userHeard==null?'未回答':(V.userHeard?'聞こえた':'聞こえない')),
+      V.canplayNote?'<tr><td>備考</td><td>'+esc(V.canplayNote)+'</td></tr>':'',V.error?kv('エラー',JSON.stringify(V.error)):'',V.playError?kv('再生エラー',V.playError):'']);
+  }else h+='<small>検証対象外</small>';
+  h+='</details>';
+  // 5 判定
+  h+='<details open><summary>⑤ 判定・警告・所要時間</summary>';
+  if(r.limitations.length)h+='<div class="warn">制限: '+r.limitations.map(esc).join(' / ')+'</div>';
+  if(r.warnings.length)h+='<div class="warn">警告: '+r.warnings.map(esc).join(' / ')+'</div>';
+  if(r.errors.length)h+='<div class="err">エラー: '+r.errors.map(esc).join(' / ')+'</div>';
+  h+='<small>所要時間(ms): '+esc(Object.entries(r.timingsMs).map(e=>e[0]+'='+e[1]).join(' '))+'</small></details>';
+  return h;
+}
+
+/* ============ JSON ============ */
+function buildReport(){
+  return {schema:TOOL.schema,tool:{name:TOOL.name,version:TOOL.version},generatedAt:new Date().toISOString(),
+    environment:{browser:ENV.browser,browserVersion:ENV.browserVersion,os:ENV.os,userAgent:ENV.userAgent,features:ENV.features,
+      library:{name:'mediabunny',version:MB_VER,license:'MPL-2.0',loaded:MBINFO.loaded,source:MBINFO.source,error:MBINFO.error}},
+    privacy:'ファイル本体・サムネイル・メタデータタグの値は含まない（タグはキー名のみ）',
+    items:items.map(i=>i.report).filter(r=>r.status!=='queued'&&r.status!=='running')};
+}
+const jsonText=()=>JSON.stringify(buildReport(),null,2);
+function stamp(){const d=new Date(),p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds())}
+
+/* ============ イベント ============ */
+$('#fi').addEventListener('change',e=>{addFiles(Array.from(e.target.files));e.target.value=''});
+const dz=$('#drop');
+['dragenter','dragover'].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.classList.add('on')}));
+['dragleave','drop'].forEach(n=>dz.addEventListener(n,e=>{e.preventDefault();dz.classList.remove('on')}));
+dz.addEventListener('drop',e=>{if(e.dataTransfer&&e.dataTransfer.files)addFiles(Array.from(e.dataTransfer.files))});
+$('#bClear').addEventListener('click',()=>{stopListen();for(const it of items.slice())if(it.report.status!=='running')removeItem(it.id)});
+$('#bJson').addEventListener('click',()=>{
+  const u=mkUrl(new Blob([jsonText()],{type:'application/json'}));const a=document.createElement('a');a.href=u;a.download='media_probe_'+stamp()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>rmUrl(u),10000);
+  $('#jsonView').hidden=false;$('#jsonView').textContent=jsonText();});
+$('#bCopy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(jsonText());$('#bCopy').textContent='コピーしました'}catch(e){$('#jsonView').hidden=false;$('#jsonView').textContent=jsonText();$('#bCopy').textContent='コピー不可→下に表示'}setTimeout(()=>$('#bCopy').textContent='JSONコピー',2500)});
+$('#bShow').addEventListener('click',()=>{const v=$('#jsonView');v.hidden=!v.hidden;if(!v.hidden)v.textContent=jsonText()});
+$('#list').addEventListener('click',e=>{
+  const b=e.target.closest('[data-act]');if(!b)return;const it=items.find(x=>x.id===b.dataset.id);if(!it)return;
+  const a=b.dataset.act;
+  if(a==='listen')startListen(it);else if(a==='stop')stopListen();
+  else if(a==='heard'||a==='nothear'){it.report.verify.userHeard=(a==='heard');finalize(it.report);render(it)}
+  else if(a==='remove')removeItem(it.id);else if(a==='rerun')rerun(it.id)});
+window.addEventListener('pagehide',()=>{stopListen();for(const u of Array.from(liveUrls))rmUrl(u)});
+window.__probe={items,liveUrlCount:()=>liveUrls.size,buildReport,mbInfo:MBINFO,idle:()=>!busy&&!items.some(i=>i.report.status==='queued'||i.report.status==='running')};
+renderEnv();updLive();loadMB();
+</script>
+</body></html>
