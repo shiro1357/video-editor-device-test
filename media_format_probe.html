@@ -39,7 +39,7 @@ pre{white-space:pre-wrap;max-height:300px;overflow:auto;background:var(--bg);pad
 .nm{font-weight:700}
 </style></head>
 <body>
-<h1>Media Format Probe <small>Step A / v1.1.0</small></h1>
+<h1>Media Format Probe <small>Step A / v1.1.1</small></h1>
 <div class="chips" id="envChips"></div><div id="secWarn" class="warn" hidden>⚠ 安全なコンテキスト（HTTPS等）ではありません。WebCodecs等が使えない場合があります。GitHub Pages等のHTTPSで開いてください。</div>
 <small>動画・画像・音声の「解析できた」「ブラウザがデコードできた」「実際に表示/再生できた」を別々に検査します。ファイルは端末内でのみ処理し、送信しません。1ファイルずつ順番に検査します。</small>
 
@@ -65,7 +65,7 @@ pre{white-space:pre-wrap;max-height:300px;overflow:auto;background:var(--bg);pad
 <script>
 'use strict';
 /* ============ 定数 ============ */
-const TOOL={name:'media_format_probe',version:'1.1.0',schema:'media-format-probe/1'};
+const TOOL={name:'media_format_probe',version:'1.1.1',schema:'media-format-probe/1'};
 const MB_VER='1.64.0';
 // 相対パス（GitHub Pagesのリポジトリ配下でも動く）を先に試し、無ければ固定バージョンのCDNへ
 const MB_SOURCES=['./vendor/mediabunny.min.mjs','https://cdn.jsdelivr.net/npm/mediabunny@'+MB_VER+'/dist/bundles/mediabunny.min.mjs'];
