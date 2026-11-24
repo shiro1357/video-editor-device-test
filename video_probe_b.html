@@ -3,149 +3,299 @@
 <title>Video Probe B</title>
 <style>:root{color-scheme:light dark;--bg:#fff;--fg:#1a1a1a;--bd:#8886}@media(prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee}}
 body{margin:0;padding:10px;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif}
-button,input,select{font:inherit;padding:8px 10px;margin:3px 3px 3px 0}input[type=number]{width:4.5em}input[type=checkbox]{padding:0}
+button,input,select{font:inherit;padding:8px 10px;margin:3px 3px 3px 0}input[type=number]{width:4.5em}input[type=checkbox]{padding:0}#note{width:95%}
 pre{white-space:pre-wrap;word-break:break-all;border:1px solid var(--bd);padding:8px;border-radius:6px;max-height:50vh;overflow:auto;font-size:12px}
-video{max-width:160px;max-height:90px}small{opacity:.7}label{margin-right:10px;white-space:nowrap}h1{font-size:18px}#warn{color:#c60;font-weight:bold}</style></head><body>
-<h1>Video Probe <small>Step B / v0.2.0 診断版</small></h1>
-<p><small>映像エンジン検証。1回に1フェーズ・1ファイルずつ実行します。ファイルはブラウザ内だけで処理し、送信しません。保存するのは診断情報のみです（映像データは保存しません）。</small></p>
+video{max-width:160px;max-height:90px}small{opacity:.75}label{margin-right:10px;white-space:nowrap}h1{font-size:18px}#warn,#warn2{color:#c60;font-weight:bold}</style></head><body>
+<h1>Video Probe <small>Step B / v0.3.3 安全性改善版</small></h1>
+<p><small>映像エンジン検証。1回に1フェーズ・1ファイルずつ実行します。ファイルはブラウザ内だけで処理し、送信しません。保存するのは診断情報のみ（映像データは保存しません）。ページは開いたまま（前面）で実行してください。情報確認モードでも、Mediabunnyがファイルを読み取り、コンテナと全パケットのメタデータを解析します（映像のデコード・再生はしません）。<br>
+※ capability（canPlayType／MediaCapabilities／isConfigSupported）は「対応能力の表示」であり、実際のデコード成功・ハードウェアデコード成功を保証しません。HTMLVideoElementのHW/SW区別はコードから確定できないため「デコード方式不明」と記録します。このページはChromeのハードウェアアクセラレーション設定を変更・確認しません。</small></p>
 <input type="file" id="fi" accept="video/*,.mov,.mp4,.m4v,.webm" multiple><select id="fsel"></select><br>
-<label><input type="checkbox" id="cSafe" checked>安全モード（既定ON）</label>
-<label><input type="checkbox" id="cLuma">画素確認（GPU→CPU読み戻しあり／安全モード中は無効）</label><br>
-<label>シーク回数<input type="number" id="nSeek" value="16" min="4" max="60"></label>
-<label>再生秒<input type="number" id="nPlay" value="5" min="2" max="60"></label>
-<label>負荷シーク<input type="number" id="nStress" value="100" min="20" max="500"></label>
+<label>検証モード<select id="mode"><option value="0">1 情報確認（既定・解析のみ。再生しない）</option><option value="1">2 基本動画検証（再生・シーク）</option><option value="2">3 高度診断（連続シーク・負荷・再生成・WebCodecs）</option></select></label><br>
+<label><input type="checkbox" id="cLuma" disabled>画素確認（GPU→CPU読み戻し。高度診断のみ）</label><br>
+<label>シーク回数<input type="number" id="nSeek" value="8" min="4" max="16"></label>
+<label>再生秒<input type="number" id="nPlay" value="5" min="2" max="15"></label>
+<label>負荷シーク<input type="number" id="nStress" value="10" min="5" max="30"></label>
+<label>直前のクラッシュから(分・任意)<input type="number" id="tCrash" min="0"></label><br>
+<input type="text" id="note" maxlength="300" placeholder="メモ（任意。chrome://gpuの状態・再起動の有無など。JSONに入ります）">
 <div id="btns"></div>
 <button id="save">JSON保存</button><button id="reset">結果を消去</button>
-<div id="warn"></div><div id="pv"></div><div id="stat"><small>環境確認中…</small></div><pre id="log"></pre>
+<div id="warn"></div><div id="warn2"></div><div id="pv"></div><div id="stat"><small>環境確認中…</small></div><pre id="log"></pre>
 <script>
 'use strict';
-const TOOL={name:'video_probe_b',version:'0.2.0',schema:'video-probe-b/2'};
+const TOOL={name:'video_probe_b',version:'0.3.3',schema:'video-probe-b/3'};
 const MB_VER='1.64.0',MB_SRC=['./vendor/mediabunny.min.mjs','https://cdn.jsdelivr.net/npm/mediabunny@'+MB_VER+'/dist/bundles/mediabunny.min.mjs'];
-const PHASES=[['info','①情報（解析・対応確認）'],['seek','②シーク'],['rapid','③連続シーク'],['play','④再生'],['stress','⑤負荷シーク'],['recycle','⑥要素再生成'],['webcodecs','⑦WebCodecs']];
+const PHASES=[['infoA','①-A メタデータ解析'],['infoB','①-B canPlayType'],['infoC','①-C MediaCapabilities'],['infoD','①-D isConfigSupported'],['seek','②シーク'],['rapid','③連続シーク'],['play','④再生'],['stress','⑤負荷シーク'],['recycle','⑥要素再生成'],['webcodecs','⑦WebCodecs']];
+// 必要モード: 0=情報確認 1=基本動画検証 2=高度診断
+const PHLV={infoA:0,infoB:0,infoC:0,infoD:0,seek:1,play:1,rapid:2,stress:2,recycle:2,webcodecs:2},MODN=['info','basic','advanced'],LIMS={infoA:6e4,infoB:2e4,infoC:6e4,infoD:6e4,seek:15e4,rapid:6e4,play:6e4,stress:18e4,recycle:12e4,webcodecs:15e4};
+let DEC_TMO=20000,SEEK_TMO=4000,RVFC_OVERRIDE=null;const META={};
+const hasRvfc=()=>RVFC_OVERRIDE!=null?RVFC_OVERRIDE:(typeof HTMLVideoElement!=='undefined'&&'requestVideoFrameCallback' in HTMLVideoElement.prototype); // WebCodecs: 1目標あたり（入力〜flush）の期限。低スペックでも正常処理を失敗扱いにしない長さ
 const $=id=>document.getElementById(id),now=()=>performance.now(),r3=x=>x==null?null:Math.round(x*1000)/1000,sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const log=s=>{const e=$('log');e.textContent+=s+'\n';e.scrollTop=1e9},errS=e=>e&&e.name?e.name+': '+e.message:String(e);
-let MB=null,urls=0,REPORT=null,FILES=[],busy=false;const mk=b=>{urls++;return URL.createObjectURL(b)},rm=u=>{urls--;URL.revokeObjectURL(u)};
+let MB=null,urls=0,REPORT=null,FILES=[],busy=false,MODE=0,CTX=null,CLEANUP_BAD=false,libFail=false,storageFail=0,lastSave=0,fileSeq=0;
+const SID=Math.random().toString(36).slice(2,8),T_LOAD=now();
+const mk=b=>{urls++;return URL.createObjectURL(b)},rm=u=>{urls--;URL.revokeObjectURL(u)};
 const sorted=a=>[...a].sort((x,y)=>x-y),med=a=>a.length?sorted(a)[a.length>>1]:null,pct=(a,p)=>a.length?sorted(a)[Math.min(a.length-1,Math.floor(a.length*p))]:null;
+const mx=a=>a.reduce((m,x)=>x>m?x:m,0); // Math.max(...大配列) のRangeError回避
 const rng=s=>()=>(s=(s*1664525+1013904223)>>>0)/4294967296;
 const idxLE=(a,t)=>{let lo=0,hi=a.length-1,r=0;while(lo<=hi){const m=(lo+hi)>>1;if(a[m]<=t+1e-6){r=m;lo=m+1}else hi=m-1}return r};
 const idxNear=(a,t)=>{const i=idxLE(a,t);return i+1<a.length&&Math.abs(a[i+1]-t)<Math.abs(a[i]-t)?i+1:i};
+// 結果品質: 全件成功=complete/full、一部成功=partial、成功0かつタイムアウトあり=timeout、全件判定不能=undetermined、それ以外=failed
+function grade(c){const n=c.n,g=c.good||0,to=c.timeout||0,un=c.undetermined||0,b={n,good:g,timeout:to,undetermined:un,other:Math.max(0,n-g-to-un)};
+ if(!(n>0))return{resultStatus:'failed',measurementQuality:'none',breakdown:b};if(g===n)return{resultStatus:'complete',measurementQuality:'full',breakdown:b};if(g>0)return{resultStatus:'partial',measurementQuality:'partial',breakdown:b};
+ return{resultStatus:to>0?'timeout':un===n?'undetermined':'failed',measurementQuality:'none',breakdown:b}}
+const gq=st=>{const r=grade({n:st.length,good:st.filter(x=>x==='ok').length,timeout:st.filter(x=>x==='timeout').length});r.status=r.resultStatus==='complete'?'ok':r.resultStatus;return r};
+// 実行状態(rec.status)は「どう終わったか」、resultStatus/measurementQualityは「測定・問い合わせの結果の質」。partial/undeterminedはdoneでも全成功ではない
+const STAT_OF={complete:'done',partial:'done',undetermined:'done',timeout:'timeout',failed:'error',unsupported:'unsupported'};
+const callApi=fn=>{try{return Promise.resolve(fn())}catch(e){return Promise.reject(e)}}; // 同期例外も拒否Promiseにそろえる
+const API_TMO=10000,PLAY_START_TMO=10000,rem=()=>CTX?Math.max(1,CTX.deadline-now()):API_TMO;
 const tally=a=>a.reduce((o,x)=>(o[x]=(o[x]||0)+1,o),{});
-// 途中経過の保存（クラッシュ後も残す）。診断情報のみ。localStorageへ同期書き込み（ベストエフォート）
-const SK='vpb:report',BK='vpb:beat';
-const save=()=>{try{localStorage.setItem(SK,JSON.stringify(REPORT))}catch(e){}};
-const beat=(ph,f,i)=>{try{localStorage.setItem(BK,JSON.stringify({ph,f,i,t:new Date().toISOString()}))}catch(e){}};
+// 数値入力: HTML属性に頼らず実行直前にJS側で検証（NaN/Infinity/空→既定値、小数→四捨五入、範囲外→上下限に丸める）
+function num(id,min,cap,def){const raw=$(id).value,x=Number(raw),v=(raw===''||!Number.isFinite(x))?def:Math.round(x),c=Math.min(cap,Math.max(min,v));return{v:c,adj:c!==x?{raw,used:c}:null}}
+// 中断・無効・時間切れ。結果の信頼性に関わる状態を通常のエラーと区別する
+class Stop extends Error{constructor(kind,msg){super(msg);this.kind=kind}}
+const chk=()=>{if(!CTX)return;if(CTX.hidden)throw new Stop('invalid','ページが非表示になった（バックグラウンド化）。rVFC等が止まるため測定は無効');if(now()>CTX.deadline)throw new Stop('timeout','フェーズの制限時間('+Math.round(CTX.limit/1000)+'秒)を超えた')};
+const PEND=new Set(),OWN=new WeakMap();
+const own=i=>{let o=OWN.get(i);if(!o){o={pending:new Set(),want:false,done:false,ok:false,err:null,late:false,disposeCount:0,rec:null};OWN.set(i,o)}return o};
+// cleanupStatusは測定statusとは独立。confirmedはInput解放確認済み、pendingは遅延処理後の解放待ち、failedは解放失敗またはvideo解放失敗。
+function updateCleanupStatus(rec){if(!rec)return;const d=rec.inputDisposal,bad=CLEANUP_BAD||d==='dispose-failed'||d==='dispose-unconfirmed',pending=typeof d==='string'&&d.startsWith('deferred');
+ rec.videoCleanupStatus=CLEANUP_BAD?'failed':'no-known-failure';
+ rec.cleanupStatus=bad?'failed':pending?'pending':(d==='disposed'||d==='disposed-after-late-completion')?'confirmed':d==='not-applicable'?'not-applicable':'unconfirmed';
+ rec.cleanupIncomplete=['failed','pending','unconfirmed'].includes(rec.cleanupStatus)}
+// Inputは必ず1回だけdispose。そのInputを使う処理(owner指定の保留)が残っている間はdisposeしない。Input無関係のPromise(MediaCapabilities・play()等)は止めない
+// dispose()を「試みた」ことと「成功した」ことを分ける。Mediabunny 1.64.0: dispose(): void は同期、`disposed` getterあり（読取は InputDisposedError で中止される）。試行は1回だけで、失敗しても再試行しない
+function disposeOnce(i){const o=own(i);if(o.done)return o.ok;if(o.pending.size)return false;o.done=true;o.disposeCount++;
+ try{i.dispose();o.ok=i.disposed===true;if(!o.ok)o.err='dispose()は例外なく戻ったが disposed が true にならなかった'}catch(e){o.ok=false;o.err=errS(e)}
+ if(o.rec){o.rec.inputDisposal=o.ok?(o.late?'disposed-after-late-completion':'disposed'):(/disposed が true/.test(o.err||'')?'dispose-unconfirmed':'dispose-failed');if(!o.ok){o.rec.inputDisposalError=o.err;(o.rec.warnings=o.rec.warnings||[]).push('Input.dispose(): '+o.err)}updateCleanupStatus(o.rec);if(REPORT&&REPORT.phases&&REPORT.phases.includes(o.rec))save(true)}
+ if(!o.ok)log('  ⚠ Input.dispose() が成功と確認できなかった: '+o.err);return o.ok}
+// 期限付き待機 {owner:Input, kind, bag, tmo}。待機を打ち切っても元のPromise自体は中止できない（abandoned=true）。完了(settled)したかを項目ごとに保持する
+function guard(name,p,o={}){const t=o.tmo!=null?o.tmo:CTX?Math.max(1,CTX.deadline-now()):1e9,ow=o.owner,e={name,kind:o.kind||(ow?'mediabunny':'browser-api'),owner:ow,settled:false,abandoned:false};
+ PEND.add(e);if(ow)own(ow).pending.add(e);if(o.bag)o.bag.push(e);p=Promise.resolve(p);
+ const end=()=>{e.settled=true;PEND.delete(e);if(ow){const w=own(ow);w.pending.delete(e);if(e.abandoned)log('  ↳ 打ち切り済みの「'+name+'」が遅れて終了');if(w.want)disposeOnce(ow)}};p.then(end,end);let tid;
+ return Promise.race([p,new Promise((_,ng)=>{tid=setTimeout(()=>{e.abandoned=true;ng(new Stop('timeout','「'+name+'」が制限時間内に完了しなかった（待機を打ち切ったが処理自体は中止できない）'))},t)})]).finally(()=>clearTimeout(tid))}
+// 使用中の処理を最大2秒待つ。まだ残れば解放を保留し、その処理が終わった時点で1回だけ解放する
+async function safeDispose(input,rec){const w=own(input);w.want=true;if(rec)w.rec=rec;const t0=now();while(w.pending.size&&now()-t0<2000)await sleep(25);
+ if(w.pending.size){w.late=true;if(rec){rec.inputDisposal='deferred（使用中の処理が未完了。完了次第1回だけ解放）';updateCleanupStatus(rec)}log('  ⚠ Inputを使う処理が未完了のためdisposeを保留（完了後に1回だけ解放）: '+[...w.pending].map(e=>e.name).join(','));return false}
+ return disposeOnce(input)}
+// ---- 保存（localStorage）。診断情報のみ。容量上限・失敗通知・間引き（メモリ上の結果は削除しない）----
+const SK='vpb:report',MAXS=900000,slim=(k,v)=>(k==='results'||k==='targets'||k==='partial')?undefined:v;
+function serialize(){let r={...REPORT,phases:REPORT.phases.slice(-40),items:REPORT.items.slice(-12)},s=JSON.stringify(r);
+ if(s.length>MAXS){r={...r,storageNote:'容量のため詳細配列(results/targets/partial)を保存から除外。メモリ上とJSON保存には残る'};s=JSON.stringify(r,slim)}
+ if(s.length>MAXS){r={...r,phases:r.phases.slice(-5),items:r.items.slice(-3)};s=JSON.stringify(r,slim)}return s}
+function save(force){const t=now();if(!force&&t-lastSave<2000)return;lastSave=t;REPORT.storage={failures:storageFail};
+ try{localStorage.setItem(SK,serialize())}catch(e){storageFail++;REPORT.storage={failures:storageFail,lastError:errS(e)};$('warn2').textContent='⚠ 保存失敗('+storageFail+'回): 診断結果はこのページのメモリ上にだけあります。今すぐ「JSON保存」してください。'+errS(e)}}
+const prog=(rec,i,n)=>{rec.progress={i,n,at:new Date().toISOString()};save(false)};
 function cls(P,mt,ei){if(mt==null)return{c:'no-result'};const i=idxNear(P.ps,mt),off=Math.abs(P.ps[i]-mt),d=i-ei;
  const c=off>0.002?'off-grid':d===0?'exact':d===1?'next-frame':d===-1?'prev-frame':(d<-1&&P.keys.has(P.ps[i]))?'keyframe-snap':'wrong-frame';return{c,d,off:r3(off)}}
 async function loadMB(){const errs=[];for(const s of MB_SRC){try{const m=await import(s);if(!m.Input)throw new Error('Input なし');MB=m;return s}catch(e){errs.push(s+' → '+errS(e))}}throw new Error(errs.join(' | '))}
-// WebGLコンテキストは作らない（GPU名の取得をやめた。GPU情報は chrome://gpu で確認）
-async function env(){const e={userAgent:navigator.userAgent,isSecureContext,protocol:location.protocol,cores:navigator.hardwareConcurrency,deviceMemoryGB:navigator.deviceMemory??null,gpu:'未取得（WebGLを作らない）',
+async function env(){const e={userAgent:navigator.userAgent,isSecureContext,protocol:location.protocol,cores:navigator.hardwareConcurrency,deviceMemoryGB:navigator.deviceMemory??null,visibility:document.visibilityState,screen:screen.width+'x'+screen.height+'@'+devicePixelRatio,gpu:'未取得（WebGLを作らない。chrome://gpuで確認）',
  api:{VideoDecoder:typeof VideoDecoder,rVFC:'requestVideoFrameCallback' in HTMLVideoElement.prototype,perfMemory:!!performance.memory,mediaCapabilities:!!navigator.mediaCapabilities}};
  try{const u=navigator.userAgentData;if(u){e.uaBrands=u.brands.map(b=>b.brand+' '+b.version);const h=await u.getHighEntropyValues(['platform','platformVersion','architecture','bitness']);delete h.brands;e.uaHigh=h}}catch(x){}return e}
-async function parse(file){const {Input,BlobSource,ALL_FORMATS,EncodedPacketSink}=MB;const input=new Input({source:new BlobSource(file),formats:ALL_FORMATS});
- try{const track=await input.getPrimaryVideoTrack();if(!track)throw new Error('映像トラックなし');const sink=new EncodedPacketSink(track);
- const pts=[],keys=new Set();let p=await sink.getFirstPacket({metadataOnly:true});
- while(p&&pts.length<40000){pts.push(p.timestamp);if(p.type==='key')keys.add(p.timestamp);p=await sink.getNextPacket(p,{metadataOnly:true})}
- const ps=sorted(pts),d=[];for(let i=1;i<ps.length;i++)d.push(ps[i]-ps[i-1]);const fd=med(d)||1/30;
+async function parseBody(input,file,ctl){const {EncodedPacketSink}=MB,LIM=40000;chk();const track=await input.getPrimaryVideoTrack();let cn=null;try{const fm=await input.getFormat();cn=fm&&fm.name||null}catch(e){}
+ const base={container:cn,fileType:file.type,fileSizeBytes:file.size};
+ if(!track)return{ps:[],keys:new Set(),fd:1/30,cfg:null,sink:null,info:{...base,analysis:{status:'no-video-track'}}};
+ let cfg=null,cfgErr=null;try{cfg=await track.getDecoderConfig()}catch(e){cfgErr=errS(e)}
+ const sink=new EncodedPacketSink(track),pts=[],keys=new Set();let p=await sink.getFirstPacket({metadataOnly:true});
+ while(p&&pts.length<LIM){if((pts.length&63)===0){chk();if(ctl.cancel)throw new Error('解析の中止要求')}pts.push(p.timestamp);if(p.type==='key')keys.add(p.timestamp);p=await sink.getNextPacket(p,{metadataOnly:true})}
+ const trunc=!!p,ps=sorted(pts),d=[];for(let i=1;i<ps.length;i++)d.push(ps[i]-ps[i-1]);const fdKnown=d.length>0&&med(d)>0,fd=fdKnown?med(d):1/30; // fdKnown=false のときの1/30は内部計算用の代替値で、レポートの測定値ではない
  const kv=[...keys].sort((x,y)=>x-y).map(t=>idxLE(ps,t));let gap=0;for(let i=1;i<kv.length;i++)gap=Math.max(gap,kv[i]-kv[i-1]);
- let rot=null;try{rot=await track.getRotation()}catch(e){}const cfg=await track.getDecoderConfig();
+ let rot=null;try{rot=await track.getRotation()}catch(e){}
  let au=false;try{const a=await input.getPrimaryAudioTrack();if(a){const ac=await a.getDecoderConfig();au={codec:ac&&ac.codec,channels:ac&&ac.numberOfChannels,sampleRate:ac&&ac.sampleRate,note:'存在確認のみ（再生・同期はStep D）'}}}catch(e){au=null}
- const info={codec:cfg&&cfg.codec,codedWidth:cfg&&cfg.codedWidth,codedHeight:cfg&&cfg.codedHeight,rotation:rot,frames:ps.length,truncated:pts.length>=40000,keyframes:keys.size,maxKeyGapFrames:gap,
-  medianFrameSec:r3(fd),fpsMedian:r3(1/fd),fpsAverage:r3((ps.length-1)/(ps[ps.length-1]-ps[0]||1)),vfrDeviatingRatio:r3(d.filter(x=>Math.abs(x-fd)>fd*.25).length/(d.length||1)),
+ const span=fdKnown?ps[ps.length-1]-ps[0]+fd:null,status=!pts.length?'no-packets':!cfg?'no-decoder-config':'ok';
+ const info={...base,analysis:{status,decoderConfigError:cfgErr,packetLimit:LIM,truncated:trunc},codec:cfg&&cfg.codec,codedWidth:cfg&&cfg.codedWidth,codedHeight:cfg&&cfg.codedHeight,rotation:rot,frames:ps.length,truncated:trunc,keyframes:keys.size,maxKeyGapFrames:gap,
+  analyzedDurationSec:r3(span),estimatedDurationSec:trunc?null:r3(span),durationIsEstimate:true,estimatedDurationNote:'PTS範囲（最終PTS−最初のPTS＋中央フレーム間隔）からの推定。コンテナ上の厳密な動画長ではない'+(trunc?'。'+LIM+'パケットで解析を打ち切ったためestimatedDurationSecはnull、analyzedDurationSecは解析済み範囲の長さでファイル全体の長さではない':''),
+  frameIntervalKnown:fdKnown,medianFrameSec:fdKnown?r3(fd):null,fpsMedian:fdKnown?r3(1/fd):null,fpsAverage:fdKnown?r3((ps.length-1)/(ps[ps.length-1]-ps[0]||1)):null,vfrDeviatingRatio:fdKnown?r3(d.filter(x=>Math.abs(x-fd)>fd*.25).length/d.length):null,statsNote:fdKnown?null:'PTSが2件未満（または間隔0）のためfps・長さは不明(null)。内部処理には代替値1/30秒を使うが測定値ではない',
   embeddedAudio:au,hasReorder:pts.some((x,i)=>i&&x<pts[i-1]),firstPts:r3(ps[0]),lastPts:r3(ps[ps.length-1])};
- return{input,track,sink,ps,keys,fd,cfg,info}}catch(e){try{input.dispose()}catch(x){}throw e}}
+ return{ps,keys,fd,fdKnown,cfg,sink,info}}
+// 解析はフェーズ期限内（ループ内のchk＋全体のguard）。期限切れ・中断時はdispose前に保留処理の終了を待つ
+async function parse(file,rec){const {Input,BlobSource,ALL_FORMATS}=MB;const input=new Input({source:new BlobSource(file),formats:ALL_FORMATS}),ctl={cancel:false};own(input);
+ try{const P=await guard('Mediabunny解析(parse)',parseBody(input,file,ctl),{owner:input});P.input=input;return P}catch(e){ctl.cancel=true;await safeDispose(input,rec);throw e}}
 function targets(P,n){const R=rng(12345),a=P.ps,o=[];for(let i=0;i<n;i++){const k=Math.min(a.length-1,Math.floor(a.length*(i+R()*.8)/n));o.push(i%2?a[k]+P.fd*.5:a[k])}
  for(let i=o.length-1;i>0;i--){const j=Math.floor(R()*(i+1));[o[i],o[j]]=[o[j],o[i]]}return o}
-// <video>: 生成と、後片付け完了待ち（emptied＋猶予）。次のデコーダーはこの完了後にだけ作る
-async function openVideo(file){const v=document.createElement('video');v.muted=true;v.playsInline=true;v.preload='auto';const u=mk(file);v.src=u;$('pv').replaceChildren(v);const h={v,u};
- try{await new Promise((ok,ng)=>{const t=setTimeout(()=>ng(new Error('loadeddata タイムアウト')),15000);v.onloadeddata=()=>{clearTimeout(t);ok()};v.onerror=()=>{clearTimeout(t);ng(new Error('MEDIA_ERR_'+(v.error&&v.error.code)+' '+(v.error&&v.error.message||'')))}})}catch(e){await closeVideo(h);throw e}return h}
-async function closeVideo(h){const v=h.v;let em=null;try{em=new Promise(r=>v.addEventListener('emptied',r,{once:true}));v.pause();v.removeAttribute('src');v.load()}catch(e){}
- try{v.remove()}catch(e){}rm(h.u);await Promise.race([em||Promise.resolve(),sleep(1000)]);await sleep(300)}
-function seekOnce(v,t,tmo=4000){return new Promise(res=>{const s=now(),o={req:r3(t)};let done=false,id=0;
- const fin=x=>{if(done)return;done=true;clearTimeout(tm);v.removeEventListener('seeked',onS);try{v.cancelVideoFrameCallback(id)}catch(e){}Object.assign(o,x);res(o)},onS=()=>{o.seekedMs=r3(now()-s)},tm=setTimeout(()=>fin({timeout:true,mediaTime:null}),tmo);
- v.addEventListener('seeked',onS);
- id=v.requestVideoFrameCallback((n,md)=>fin({presentMs:r3(now()-s),mediaTime:md.mediaTime,presentedFrames:md.presentedFrames,processingMs:r3(md.processingDuration!=null?md.processingDuration*1000:null),expectedDisplayLeadMs:r3(md.expectedDisplayTime!=null?md.expectedDisplayTime-n:null),size:md.width+'x'+md.height}));
- v.currentTime=t})}
-async function seekTest(P,v,n,fn){const T=targets(P,n);await seekOnce(v,P.ps[P.ps.length-1]);const R=[];
- for(const t of T){beat('seek',fn,R.length);const o=await seekOnce(v,t),ei=idxLE(P.ps,t);o.expectedIdx=ei;o.expectedPts=r3(P.ps[ei]);Object.assign(o,cls(P,o.mediaTime,ei));R.push(o)}
- const pm=R.filter(x=>x.presentMs!=null).map(x=>x.presentMs);
- return{summary:{n:R.length,classes:tally(R.map(x=>x.c)),timeouts:R.filter(x=>x.timeout).length,presentMsMedian:r3(med(pm)),presentMsP95:r3(pct(pm,.95)),presentMsMax:r3(Math.max(0,...pm)),
-  rawDeltaSecMax:r3(Math.max(0,...R.filter(x=>x.mediaTime!=null).map(x=>Math.abs(x.mediaTime-x.req))))},results:R,targets:T}}
-async function rapidTest(P,v,n=40,gap=20){const T=targets(P,n),cb=[];let alive=true,sk=0,lt0=now(),stall=0,rid=0;const iv=setInterval(()=>{const x=now();stall=Math.max(stall,x-lt0-10);lt0=x},10);
+// ---- <video> の生成と破棄 ----
+async function openVideo(file){if(CLEANUP_BAD)throw new Error('前回の<video>解放が未確認のため新しい動画要素を作らない（ページを再読み込みしてください）');chk();
+ const v=document.createElement('video');v.muted=true;v.playsInline=true;v.preload='auto';const u=mk(file);v.src=u;$('pv').replaceChildren(v);const h={v,u};
+ try{await new Promise((ok,ng)=>{const t=setTimeout(()=>ng(new Stop('timeout','loadeddata が時間内に来なかった')),Math.max(1,Math.min(15000,CTX?CTX.deadline-now():15000)));v.onloadeddata=()=>{clearTimeout(t);ok()};v.onerror=()=>{clearTimeout(t);ng(new Error('MEDIA_ERR_'+(v.error&&v.error.code)+' '+(v.error&&v.error.message||'')))}})}catch(e){await closeVideo(h);throw e}return h}
+// 順序: pause → src解除 → load() → 解放の実確認(readyState=0 かつ networkState=EMPTY/NO_SOURCE。最大2.5秒) → DOMから削除 → Object URL revoke。確認できなければ以後の生成を止める
+async function closeVideo(h){const v=h.v;let ok=false;try{v.onloadeddata=v.onerror=null;v.pause();v.removeAttribute('src');v.load()}catch(e){}
+ const t0=now();while(now()-t0<2500){if(v.readyState===0&&(v.networkState===0||v.networkState===3)){ok=true;break}await sleep(50)}
+ try{v.remove()}catch(e){}if(h.u){rm(h.u);h.u=null}await sleep(300);
+ if(!ok){CLEANUP_BAD=true;log('  ⚠ <video>の解放を確認できず(readyState='+v.readyState+', networkState='+v.networkState+')。以後の動画要素の生成を止めます。ページを再読み込みしてください')}return ok}
+// ---- シーク計測 ----
+// rVFCを登録→currentTime設定。シーク前の古いフレーム（開始位置付近かつ目標から遠い）は stale として無視。seeked と新フレームの両方を確認し、80ms静定後の最新フレームを結果にする
+function seekOnce(v,t,P,tmo=SEEK_TMO){return new Promise(res=>{tmo=Math.min(tmo,CTX?Math.max(50,CTX.deadline-now()):tmo);const s=now(),fd=P.fd,o={req:r3(t),staleIgnored:0},st=v.currentTime;let done=false,id=0,tm=0,sTm=0,seeked=false,first=null,last=null;
+ const canFilter=Math.abs(t-st)>fd*3;if(!canFilter){o.staleFilter='off(開始位置が目標に近く、古いフレームを識別できない)';o.undetermined=true}
+ const stale=mt=>canFilter&&Math.abs(mt-st)<=fd*1.5&&Math.abs(mt-t)>fd*1.5;
+ const fin=x=>{if(done)return;done=true;clearTimeout(tm);clearTimeout(sTm);v.removeEventListener('seeked',onS);try{v.cancelVideoFrameCallback(id)}catch(e){}o.hiddenDuring=!!(CTX&&CTX.hidden);o.seekedSeen=seeked;Object.assign(o,x);res(o)};
+ const ok=()=>fin({presentMs:r3(first.ms),finalizedAtMs:r3(now()-s),settleWindowMs:80,mediaTime:last.md.mediaTime,firstMediaTime:first.md.mediaTime,changedAfterFirst:last!==first,presentedFrames:last.md.presentedFrames,
+  processingMs:r3(last.md.processingDuration!=null?last.md.processingDuration*1000:null),expectedDisplayLeadMs:r3(last.md.expectedDisplayTime!=null?last.md.expectedDisplayTime-last.n:null),size:last.md.width+'x'+last.md.height});
+ const settle=()=>{if(seeked&&last&&!sTm)sTm=setTimeout(ok,80)};
+ const onS=()=>{if(!seeked){seeked=true;o.seekedMs=r3(now()-s);settle()}};
+ const onF=(n,md)=>{if(done)return;if(stale(md.mediaTime))o.staleIgnored++;else{o.candidates=(o.candidates||0)+1;const c={md,n,ms:now()-s};if(!first)first=c;last=c;settle()}id=v.requestVideoFrameCallback(onF)};
+ tm=setTimeout(()=>fin({timeout:true,mediaTime:null,staleOnly:!first&&o.staleIgnored>0,noSeeked:!seeked,noFrame:!first&&!o.staleIgnored}),tmo);
+ v.addEventListener('seeked',onS);id=v.requestVideoFrameCallback(onF);v.currentTime=t})}
+// 80ms静定の定義: 「seeked発火済み かつ 新フレームを1枚以上受信」になった最初の時点から固定80ms後に、その時点の最新フレームを採用する（最後の新フレームからの再計測ではない。以後の変化は見ない）
+async function seekTest(P,v,n,rec){const T=targets(P,n);chk();const last=P.ps[P.ps.length-1];
+ if(Math.abs(v.currentTime-last)>P.fd*3){const w=rec.warmup=await seekOnce(v,last,P);if(w.timeout)throw new Stop('timeout','ウォームアップシークがタイムアウト（'+(w.staleOnly?'古いフレームのみ':w.noSeeked?'seeked未発火':'新フレームなし')+'）。残りのシークは実行しない')}
+ const R=[];rec.partial=R;
+ for(const t of T){chk();const o=await seekOnce(v,t,P),ei=idxLE(P.ps,t);o.expectedIdx=ei;o.expectedPts=r3(P.ps[ei]);
+  if(o.undetermined&&!o.timeout){o.c='undetermined';o.clsIfAccepted=cls(P,o.mediaTime,ei).c}else Object.assign(o,cls(P,o.mediaTime,ei));R.push(o);prog(rec,R.length,T.length)}chk();
+ const det=R.filter(x=>!x.undetermined),pm=det.filter(x=>x.presentMs!=null).map(x=>x.presentMs);
+ const gr=grade({n:R.length,good:R.filter(x=>!x.timeout&&!x.undetermined&&x.mediaTime!=null).length,timeout:R.filter(x=>x.timeout).length,undetermined:R.filter(x=>x.undetermined&&!x.timeout).length});return{...gr,summary:{n:R.length,nDeterminable:det.length,undeterminedCount:R.length-det.length,classes:tally(det.map(x=>x.c)),timeouts:R.filter(x=>x.timeout).length,timeoutsStaleOnly:R.filter(x=>x.staleOnly).length,staleFramesIgnored:R.reduce((a,x)=>a+x.staleIgnored,0),presentMsMedian:r3(med(pm)),presentMsP95:r3(pct(pm,.95)),presentMsMax:r3(mx(pm)),
+  rawDeltaSecMax:r3(mx(det.filter(x=>x.mediaTime!=null).map(x=>Math.abs(x.mediaTime-x.req)))),note:'classes・presentMsは古いフレームを識別できた(判定可能な)結果のみの集計。undeterminedは別集計。静定: seeked＋新フレーム受信後80ms固定窓'},results:R,targets:T}}
+async function rapidTest(P,v,rec,n,gap){const T=targets(P,n),cb=[];let alive=true,sk=0,lt0=now(),stall=0,rid=0;const iv=setInterval(()=>{const x=now();stall=Math.max(stall,x-lt0-10);lt0=x},10);
  const loop=(a,md)=>{cb.push({t:now(),mt:md.mediaTime});if(alive)rid=v.requestVideoFrameCallback(loop)};const onS=()=>sk++;v.addEventListener('seeked',onS);rid=v.requestVideoFrameCallback(loop);let last=0;
- try{for(const t of T){v.currentTime=t;last=now();await sleep(gap)}
- const lt=T[T.length-1],ei=idxLE(P.ps,lt);let q=0;while(q<60){const c0=cb.length;await sleep(100);if(cb.length===c0&&now()-last>400)break;q++}
- const after=cb.filter(x=>x.t>last),L=cb[cb.length-1],ok=after.find(x=>cls(P,x.mt,ei).c==='exact');
- return{issued:n,gapMs:gap,mainThreadMaxStallMs:r3(stall),seekedEvents:sk,callbacks:cb.length,finalClass:L?cls(P,L.mt,ei):null,callbacksAfterLastRequest:after.length,
+ try{for(const t of T){chk();last=now();v.currentTime=t;await sleep(gap)}
+ const lt=T[T.length-1],ei=idxLE(P.ps,lt);let q=0;while(q<60){chk();const c0=cb.length;await sleep(100);if(cb.length===c0&&now()-last>400)break;q++}
+ const after=cb.filter(x=>x.t>last),L=after[after.length-1],ok=after.find(x=>cls(P,x.mt,ei).c==='exact');
+ return{...(L?{resultStatus:'complete',measurementQuality:'full'}:{resultStatus:cb.length?'undetermined':'failed',measurementQuality:'none'}),issued:n,gapMs:gap,mainThreadMaxStallMs:r3(stall),seekedEvents:sk,callbacks:cb.length,finalClass:L?cls(P,L.mt,ei):{c:'undetermined',reason:'最後の要求以後のフレームなし'},callbacksAfterLastRequest:after.length,
   staleAfterLastRequest:after.filter(x=>cls(P,x.mt,ei).c!=='exact').length,msToExactFrame:ok?r3(ok.t-last):null}}
  finally{alive=false;clearInterval(iv);try{v.cancelVideoFrameCallback(rid)}catch(e){}v.removeEventListener('seeked',onS)}}
-async function playTest(P,v,sec){const cb=[];let alive=true,rid=0;const loop=(n,md)=>{cb.push({mt:md.mediaTime,pf:md.presentedFrames,pd:md.processingDuration});if(alive)rid=v.requestVideoFrameCallback(loop)};
- try{await seekOnce(v,P.ps[0]);const q0=v.getVideoPlaybackQuality&&v.getVideoPlaybackQuality();rid=v.requestVideoFrameCallback(loop);const t0=now();
- try{await v.play()}catch(e){return{error:errS(e)}}await sleep(sec*1e3);v.pause();const wall=(now()-t0)/1e3,q=v.getVideoPlaybackQuality&&v.getVideoPlaybackQuality();
+// 計測は play() が完了(再生開始)した後に始める。開始待ちは playStartWaitMs として別記録し、指定秒数に含めない。rVFCも再生開始後に登録
+async function playTest(P,v,sec,rec){const cb=[];let alive=false,rid=0;const loop=(n,md)=>{if(!alive)return;cb.push({mt:md.mediaTime,pf:md.presentedFrames,pd:md.processingDuration});rid=v.requestVideoFrameCallback(loop)};
+ try{chk();if(v.currentTime>P.fd){const w=await seekOnce(v,P.ps[0],P);rec.startSeek={timeout:!!w.timeout,undetermined:!!w.undetermined};if(w.timeout)throw new Stop('timeout','再生開始位置へのシークがタイムアウトした。再生を開始しない')}
+ const tReq=now();let pr;try{pr=v.play()}catch(e){pr=Promise.reject(e)}
+ try{await guard('video.play()',pr,{kind:'browser-api',tmo:Math.min(PLAY_START_TMO,rem())})}
+ catch(e){if(e instanceof Stop){rec.playStartTimedOut=true;Promise.resolve(pr).then(()=>{try{v.pause()}catch(x){}},()=>{});throw e} // 待機を打ち切った後に再生が成功しても、すぐ止める
+  return{playStarted:false,resultStatus:'failed',measurementQuality:'none',playStartWaitMs:r3(now()-tReq),error:'再生を開始できなかった(play()失敗): '+errS(e)}}
+ const startWait=now()-tReq,q0=v.getVideoPlaybackQuality&&v.getVideoPlaybackQuality(),ct0=v.currentTime;alive=true;const t0=now();rid=v.requestVideoFrameCallback(loop);
+ const end=t0+sec*1e3;while(now()<end){chk();await sleep(100)}alive=false;v.pause();const wall=(now()-t0)/1e3,q=v.getVideoPlaybackQuality&&v.getVideoPlaybackQuality();
  const mt=cb.map(x=>x.mt),g=[];for(let i=1;i<mt.length;i++)g.push(mt[i]-mt[i-1]);const uniq=new Set(mt).size,exp=mt.length?idxLE(P.ps,mt[mt.length-1])-idxLE(P.ps,mt[0])+1:0;
- return{wallSec:r3(wall),mediaAdvanceSec:r3(mt.length?mt[mt.length-1]-mt[0]:0),callbacks:cb.length,uniqueFrames:uniq,expectedFramesByPts:exp,missedFramesByPts:exp-uniq,
-  presentedFramesSpan:cb.length?cb[cb.length-1].pf-cb[0].pf+1:0,droppedVideoFrames:q?q.droppedVideoFrames-(q0?q0.droppedVideoFrames:0):null,maxGapSec:r3(Math.max(0,...g)),medianGapSec:r3(med(g)),
+ return{playStarted:true,playStartWaitMs:r3(startWait),measuredPlaySec:r3(wall),framesPresented:cb.length,currentTimeAdvanceSec:r3(v.currentTime-ct0),
+  ...(cb.length?{resultStatus:'complete',measurementQuality:'full'}:{resultStatus:'failed',measurementQuality:'none',error:'play()は成功したが新しいフレームが提示されなかった（rVFCコールバック0件）。正常終了として扱わない'}),
+  wallSec:r3(wall),mediaAdvanceSec:r3(mt.length?mt[mt.length-1]-mt[0]:0),callbacks:cb.length,uniqueFrames:uniq,expectedFramesByPts:exp,missedFramesByPts:exp-uniq,
+  presentedFramesSpan:cb.length?cb[cb.length-1].pf-cb[0].pf+1:0,droppedVideoFrames:q?q.droppedVideoFrames-(q0?q0.droppedVideoFrames:0):null,maxGapSec:r3(mx(g)),medianGapSec:r3(med(g)),
   processingMsMedian:r3(med(cb.filter(x=>x.pd!=null).map(x=>x.pd*1e3)))}}finally{alive=false;try{v.pause();v.cancelVideoFrameCallback(rid)}catch(e){}}}
 const heap=()=>performance.memory?Math.round(performance.memory.usedJSHeapSize/1048576*10)/10:null;
-async function stressTest(P,v,n,fn){const T=targets(P,n),h0=heap(),ms=[];let to=0,i=0;for(const t of T){beat('stress',fn,i++);const o=await seekOnce(v,t,3000);if(o.timeout)to++;else ms.push(o.presentMs)}
- return{seeks:n,timeouts:to,presentMsMedian:r3(med(ms)),presentMsP95:r3(pct(ms,.95)),presentMsMax:r3(Math.max(0,...ms)),jsHeapMB:{before:h0,after:heap()}}}
-async function recycle(f,k=8){const h0=heap();let fail=0;for(let i=0;i<k;i++){beat('recycle',f.name,i);try{await closeVideo(await openVideo(f))}catch(e){fail++}await sleep(300)}return{cycles:k,failures:fail,liveObjectUrls:urls,jsHeapMB:{before:h0,after:heap()}}}
-// WebCodecs: デコーダーは例外時も finally で必ず close。VideoFrameは必ず close。luma=trueのときだけ読み戻し（drawImage+getImageData）
-async function decodeRun(P,hwa,T,luma,fn){let frames=[],err=null,opened=0,closed=0,dead=false;const R=[];
- const dec=new VideoDecoder({output:f=>{opened++;if(dead){try{f.close()}catch(e){}closed++;return}frames.push(f)},error:e=>{err=errS(e)}});let cx=null;
- if(luma){const cv=document.createElement('canvas');cv.width=32;cv.height=18;cx=cv.getContext('2d',{willReadFrequently:true})}
- try{dec.configure({...P.cfg,hardwareAcceleration:hwa});
-  for(const t of T){beat('webcodecs',fn,R.length);const s=now(),ei=idxLE(P.ps,t);frames=[];let fed=0,extra=0;
-   try{let p=await P.sink.getKeyPacket(t);while(p&&!err){dec.decode(p.toEncodedVideoChunk());fed++;if(p.timestamp>t&&++extra>=4)break;if(dec.decodeQueueSize>30)await sleep(0);p=await P.sink.getNextPacket(p)}await dec.flush()}catch(e){err=err||errS(e)}
-   const ms=now()-s;let best=null;for(const f of frames){const x=f.timestamp/1e6;if(x<=t+2e-6&&(!best||x>best.timestamp/1e6))best=f}
-   let c=null,lr=null;if(best){c=cls(P,best.timestamp/1e6,ei);if(cx)try{cx.drawImage(best,0,0,32,18);const d=cx.getImageData(0,0,32,18).data;let mn=255,mx=0;for(let i=0;i<d.length;i+=4){const y=d[i]*.3+d[i+1]*.59+d[i+2]*.11;mn=Math.min(mn,y);mx=Math.max(mx,y)}lr=Math.round(mx-mn)}catch(e){}}
-   for(const f of frames){try{f.close()}catch(e){}closed++}frames=[];R.push({req:r3(t),expectedIdx:ei,fed,ms:r3(ms),frame:c?c.c:'no-frame',diff:c?c.d:null,lumaRange:lr,error:err});if(err)break}
- }catch(e){err=err||errS(e)}
- finally{dead=true;for(const f of frames){try{f.close()}catch(e){}closed++}frames=[];try{if(dec.state!=='closed')dec.close()}catch(e){}}
- const ms=R.map(x=>x.ms);return{hwa,opened,closed,leakedFrames:opened-closed,classes:tally(R.map(x=>x.frame)),msMedian:r3(med(ms)),msP95:r3(pct(ms,.95)),error:err,results:R}}
-async function wcTest(P,T,luma,fn){if(typeof VideoDecoder!=='function')return{error:'VideoDecoder なし'};const o={codec:P.cfg.codec,configSupport:{}};let first=null;
- for(const h of['no-preference','prefer-hardware','prefer-software']){try{const r=await VideoDecoder.isConfigSupported({...P.cfg,hardwareAcceleration:h});o.configSupport[h]=r.supported;if(r.supported&&!first)first=h}catch(e){o.configSupport[h]=errS(e)}}
- if(!first)return o;o.main=await decodeRun(P,first,T,luma,fn);
- if(/^(hev1|hvc1)/.test(P.cfg.codec)){o.byHwa=[];for(const h of['prefer-hardware','prefer-software'])if(o.configSupport[h]===true&&h!==first){await sleep(500);o.byHwa.push(await decodeRun(P,h,T.slice(0,4),luma,fn))}}
- return o}
-// 対応確認のみ（デコードしない）。安全モードではWebCodecsの isConfigSupported も no-preference のみ
-async function capTest(P,safe){const c=P.cfg.codec||'',o={codec:c,canPlayType:{},mediaCapabilities:[],webcodecsConfigSupport:{}},alts=[c];if(/^hev1/.test(c))alts.push(c.replace('hev1','hvc1'));if(/^hvc1/.test(c))alts.push(c.replace('hvc1','hev1'));
- for(const a of alts){const ty='video/mp4; codecs="'+a+'"';o.canPlayType[ty]=document.createElement('video').canPlayType(ty)||'(空)';
-  try{const r=await navigator.mediaCapabilities.decodingInfo({type:'file',video:{contentType:ty,width:P.cfg.codedWidth||1920,height:P.cfg.codedHeight||1080,bitrate:8e6,framerate:Math.round(1/P.fd)||30}});o.mediaCapabilities.push({ty,supported:r.supported,smooth:r.smooth,powerEfficient:r.powerEfficient})}catch(e){o.mediaCapabilities.push({ty,error:errS(e)})}}
- if(typeof VideoDecoder==='function')for(const h of safe?['no-preference']:['no-preference','prefer-hardware','prefer-software']){try{o.webcodecsConfigSupport[h]=(await VideoDecoder.isConfigSupported({...P.cfg,hardwareAcceleration:h})).supported}catch(e){o.webcodecsConfigSupport[h]=errS(e)}}
- return o}
-// ---- フェーズ実行（1回に1フェーズ・1ファイル） ----
+async function stressTest(P,v,n,rec){const T=targets(P,n),h0=heap(),ms=[];let to=0,und=0,i=0;rec.partial=ms;for(const t of T){chk();const o=await seekOnce(v,t,P,3000);if(o.timeout)to++;else if(o.undetermined)und++;else ms.push(o.presentMs);prog(rec,++i,n)}chk();
+ return{...grade({n,good:ms.length,timeout:to,undetermined:und}),seeks:n,timeouts:to,undetermined:und,presentMsMedian:r3(med(ms)),presentMsP95:r3(pct(ms,.95)),presentMsMax:r3(mx(ms)),jsHeapMB:{before:h0,after:heap()}}}
+async function recycle(f,k,rec){const h0=heap();let fail=0,done=0;for(let i=0;i<k;i++){chk();let h=null;try{h=await openVideo(f)}catch(e){if(e instanceof Stop)throw e;fail++;break}if(!await closeVideo(h)){fail++;break}done++;prog(rec,done,k);await sleep(300)}
+ return{...grade({n:k,good:done,timeout:0}),cycles:k,completed:done,failures:fail,cleanupIncomplete:CLEANUP_BAD,liveObjectUrls:urls,jsHeapMB:{before:h0,after:heap()}}}
+// ---- WebCodecs（高度診断のみ）。VideoFrameは「目標以下で最新の1枚」だけ保持し、それ以外は output 内で即close ----
+async function decodeRun(P,T,luma,rec){const R=[];const bag=[];let opened=0,closed=0,closeFailed=0,late=0,err=null,st='done',dead=false,cur=null,cx=null,thrown=null;rec.partial=R;
+ const cl=f=>{try{f.close();closed++;return true}catch(e){closeFailed++;return false}}; // close成功のみclosedに数える
+ const dec=new VideoDecoder({output:f=>{opened++;if(dead)late++;const c=cur;if(dead||!c||f.timestamp/1e6>c.t+2e-6||(c.best&&c.best.timestamp>=f.timestamp)){cl(f);return}if(c.best)cl(c.best);c.best=f},error:e=>{err=err||errS(e)}});
+ try{if(luma){const cv=document.createElement('canvas');cv.width=32;cv.height=18;cx=cv.getContext('2d',{willReadFrequently:true})}
+  dec.configure({...P.cfg,hardwareAcceleration:'no-preference'});
+  for(const t of T){chk();const s=now(),ei=idxLE(P.ps,t),c=cur={t,best:null};let fed=0,extra=0,stop=false;
+   const work=(async()=>{let p=await P.sink.getKeyPacket(t);while(p&&!err&&!stop){dec.decode(p.toEncodedVideoChunk());fed++;if(p.timestamp>t&&++extra>=4)break;while(dec.decodeQueueSize>8&&!err&&!stop)await sleep(5);p=await P.sink.getNextPacket(p)}if(!stop)await dec.flush()})();
+   let w='ok';try{await guard('Mediabunny読取/flush(目標'+R.length+')',work,{tmo:Math.min(DEC_TMO,Math.max(1,CTX?CTX.deadline-now():DEC_TMO)),owner:P.input,kind:'mediabunny',bag})}catch(e){if(e instanceof Stop&&e.kind==='timeout'){w='timeout';stop=true}else{w='ng';err=err||errS(e)}}
+   if(w==='timeout'){st='timeout';err=err||'timeout: 入力〜flushが期限内に完了しなかった（デコーダーをcloseして中断。Mediabunnyの読取は中止できず保留の可能性）'}
+   const ms=now()-s,best=err?null:c.best;let cc=null,lr=null;
+   if(best){cc=cls(P,best.timestamp/1e6,ei);if(cx)try{cx.drawImage(best,0,0,32,18);const d=cx.getImageData(0,0,32,18).data;let mn=255,mxl=0;for(let i=0;i<d.length;i+=4){const y=d[i]*.3+d[i+1]*.59+d[i+2]*.11;mn=Math.min(mn,y);mxl=Math.max(mxl,y)}lr=Math.round(mxl-mn)}catch(e){}}
+   if(c.best){cl(c.best);c.best=null}cur=null;
+   R.push({req:r3(t),expectedIdx:ei,fed,ms:r3(ms),frame:cc?cc.c:'no-frame',diff:cc?cc.d:null,lumaRange:lr,error:err});prog(rec,R.length,T.length);if(err)break}
+ }catch(e){if(e instanceof Stop)thrown=e;else{err=err||errS(e);st='error'}}
+ finally{dead=true;if(cur&&cur.best){cl(cur.best);cur.best=null}cur=null;try{if(dec.state!=='closed')dec.close()}catch(e){}}
+ // decoder.close()はWebCodecs内部の保留処理を止めるが、Mediabunny側の独立した非同期処理（読取）は止めない。残っていれば記録する
+ const t0=now();while(bag.some(e=>!e.settled)&&now()-t0<1500)await sleep(25);const pending=bag.filter(e=>!e.settled).map(e=>e.name),completion=rec.decodeCompletion={pendingTasks:pending,lateOutputsClosedSoFar:late,decoderState:dec.state,measurementComplete:pending.length===0,
+  note:'close後に届いた出力はdeadフラグで閉じる。件数は報告時点まで。以後の出力が無いことの証明ではない。pendingTasksが空でなければ未完了のタスクが残っている'};
+ if(thrown)throw thrown;if(err&&st==='done')st='error';
+ const ms=R.map(x=>x.ms);return{status:st,hardwareAcceleration:'no-preference',decodePath:'unknown',opened,closed,closeFailed,leakedFrames:opened-closed,classes:tally(R.map(x=>x.frame)),msMedian:r3(med(ms)),msP95:r3(pct(ms,.95)),error:err,completion,results:R}}
+async function wcTest(P,T,luma,rec){const o={part:'7-WebCodecs',codec:P.cfg.codec,results:{},queries:{},note:'実デコードは hardwareAcceleration=no-preference のみ。isConfigSupportedは対応能力の確認で、prefer-hardware/prefer-softwareの結果は実際のHW/SWデコードの証明ではない'};o.configSupport=o.results;
+ if(typeof VideoDecoder!=='function'||typeof VideoDecoder.isConfigSupported!=='function')return{...o,status:'unsupported',resultStatus:'unsupported',measurementQuality:'none',executionStatus:'unsupported',unsupported:true,reason:'VideoDecoder / isConfigSupported が存在しない'};
+ const st=await cfgQuery(P,['no-preference','prefer-hardware','prefer-software'],o),gc=gq(st),np=o.results['no-preference'];o.configQueryStatus=gc.resultStatus;
+ // no-preferenceが非対応なら、それを優先してunsupportedとし、HW/SW優先指定の結果で上書きしない。
+ if(np===false)return{...o,status:'unsupported',resultStatus:'unsupported',measurementQuality:'none',executionStatus:'unsupported',unsupported:true,reason:'no-preference の設定が非対応(isConfigSupported=false)のためデコードしない'};
+ if(st.includes('timeout')){const q=grade({n:st.length,good:st.filter(x=>x==='ok').length,timeout:st.filter(x=>x==='timeout').length,undetermined:st.filter(x=>x==='undetermined').length});return{...o,...q,status:q.resultStatus==='complete'?'ok':q.resultStatus,executionStatus:'timeout',reason:'isConfigSupportedがタイムアウトした。応答しない環境ではデコードを続けない'}}
+ if(np!==true)return{...o,status:'failed',resultStatus:'failed',measurementQuality:'none',executionStatus:'error',reason:'no-preference の問い合わせが成功しなかったためデコードしない'};
+ await sleep(500);o.main=await decodeRun(P,T,luma,rec);const R=o.main.results,good=R.filter(x=>x.frame!=='no-frame'&&!x.error).length,to=o.main.status==='timeout'?1:0,g=grade({n:T.length,good,timeout:to});
+ const executionStatus=o.main.status&&o.main.status!=='done'?o.main.status:'done';
+ return{...o,...g,status:g.resultStatus==='complete'?'ok':g.resultStatus,executionStatus}}
+// コンテナ形式からMIMEを決める。コンテナ名・拡張子・file.typeが食い違う／特定できない場合は問い合わせない（判定不能）
+const kd=s=>/webm/.test(s)?'webm':/quicktime|\bmov\b/.test(s)?'mov':/mp4|m4v/.test(s)?'mp4':null;
+function mimeFor(info,fname){const c=(info.container||'').toLowerCase(),ext=((fname||'').split('.').pop()||'').toLowerCase(),ft=(info.fileType||'').toLowerCase(),u=[...new Set([kd(c),kd(ext),kd(ft)].filter(Boolean))];
+ if(u.length!==1)return{mime:null,reason:(u.length?'コンテナ名・拡張子・file.typeの示す形式が食い違う: ':'コンテナ形式を特定できない: ')+JSON.stringify({container:c,ext,fileType:ft})};
+ return{mime:{webm:'video/webm',mov:'video/quicktime',mp4:'video/mp4'}[u[0]],basis:{container:c,ext,fileType:ft}}}
+// 対応確認のみ（デコードしない）。B・C・Dは別々の情報で、いずれも実再生・実デコードの成功を示さない
+const CAPDISC='対応能力の表示であり、実際のデコード成功・ハードウェアデコード成功を保証しない',altC=c=>{const a=[c];if(/^hev1/.test(c))a.push(c.replace('hev1','hvc1'));if(/^hvc1/.test(c))a.push(c.replace('hvc1','hev1'));return a};
+function capQ(P,fname){const info=P.info,kn=info.frameIntervalKnown!==false,m=mimeFor(info,fname),dur=info.estimatedDurationSec,br=dur>0?Math.round(info.fileSizeBytes*8/dur):null,known=info.codedWidth>0&&info.codedHeight>0;
+ return{m,q:{width:known?info.codedWidth:1920,height:known?info.codedHeight:1080,resolutionSource:known?'解析値':'仮定値（1920x1080。実際の解像度は不明）',framerate:kn?Math.round(1/P.fd)||30:30,framerateSource:kn?'PTS間隔の中央値（VFRでは実際と異なる）':'仮定値（30fps。PTSが2件未満で不明）',
+  bitrate:br||8e6,bitrateSource:br?'推定（ファイルサイズ×8÷推定長さ。音声を含む全体で、映像のみの実ビットレートではない）':'仮定値（8Mbps。実素材の評価ではない）'}}}
+function capB(P,fname){const{m}=capQ(P,fname),c=P.cfg.codec||'',o={part:'B-canPlayType',codec:c,container:m,disclaimer:CAPDISC,results:{}};if(!m.mime)return{...o,status:'undetermined',resultStatus:'undetermined',measurementQuality:'none',reason:m.reason};
+ const st=[];for(const a of altC(c)){chk();const ty=m.mime+'; codecs="'+a+'"';try{o.results[ty]=document.createElement('video').canPlayType(ty)||'(空)';st.push('ok')}catch(e){o.results[ty]={error:errS(e)};st.push('error')}}return{...o,...gq(st)}}
+async function capC(P,fname){const{m,q}=capQ(P,fname),c=P.cfg.codec||'',o={part:'C-MediaCapabilities',codec:c,container:m,query:q,disclaimer:CAPDISC,results:[]};
+ if(!navigator.mediaCapabilities||typeof navigator.mediaCapabilities.decodingInfo!=='function')return{...o,status:'unsupported',resultStatus:'unsupported',measurementQuality:'none',unsupported:true};if(!m.mime)return{...o,status:'undetermined',resultStatus:'undetermined',measurementQuality:'none',reason:m.reason};
+ const st=[],alts=altC(c);for(let i=0;i<alts.length;i++){chk();const ty=m.mime+'; codecs="'+alts[i]+'"';
+  try{const r=await guard('MediaCapabilities.decodingInfo',callApi(()=>navigator.mediaCapabilities.decodingInfo({type:'file',video:{contentType:ty,width:q.width,height:q.height,bitrate:q.bitrate,framerate:q.framerate}})),{kind:'browser-api',tmo:Math.min(API_TMO,rem())});o.results.push({ty,state:'ok',supported:r.supported,smooth:r.smooth,powerEfficient:r.powerEfficient});st.push('ok')}
+  catch(e){if(e instanceof Stop){o.results.push({ty,state:'timeout',error:e.message});st.push('timeout');for(const x of alts.slice(i+1)){o.results.push({ty:m.mime+'; codecs="'+x+'"',state:'skipped',reason:'前の問い合わせがタイムアウトしたため中止'});st.push('skipped')}break}o.results.push({ty,state:'error',error:errS(e)});st.push('error')}}
+ const graded=gq(st);return{...o,...graded,...(st.includes('timeout')?{executionStatus:'timeout'}:{})}}
+// isConfigSupported: 各呼び出しの前にchk、同期例外もcallApiで捕捉、タイムアウトしたら残りは中止。タイムアウトしたPromiseは中止できず未完了として追跡(guard)
+async function cfgQuery(P,list,o){const st=[];for(let i=0;i<list.length;i++){const hw=list[i];chk();
+  try{const r=await guard('isConfigSupported('+hw+')',callApi(()=>VideoDecoder.isConfigSupported({...P.cfg,hardwareAcceleration:hw})),{kind:'browser-api',tmo:Math.min(API_TMO,rem())});o.results[hw]=r.supported;o.queries[hw]={state:'ok'};st.push('ok');if(hw==='no-preference'&&r.supported===false){for(const x of list.slice(i+1)){o.results[x]='skipped';o.queries[x]={state:'skipped',reason:'no-preferenceが非対応のため後続の設定問い合わせを中止'};st.push('skipped')}break}}
+  catch(e){if(e instanceof Stop){o.results[hw]='timeout';o.queries[hw]={state:'timeout',error:e.message};st.push('timeout');for(const x of list.slice(i+1)){o.results[x]='skipped';o.queries[x]={state:'skipped',reason:'前の問い合わせがタイムアウトしたため中止'};st.push('skipped')}break}
+   o.results[hw]=errS(e);o.queries[hw]={state:'error',error:errS(e)};st.push('error')}}return st}
+async function capD(P){const o={part:'D-isConfigSupported',codec:P.cfg.codec||'',disclaimer:CAPDISC+'。prefer-hardware/prefer-softwareの結果は実際のHW/SWデコードの証明ではない',results:{},queries:{}};
+ if(typeof VideoDecoder!=='function'||typeof VideoDecoder.isConfigSupported!=='function')return{...o,status:'unsupported',resultStatus:'unsupported',measurementQuality:'none',unsupported:true};
+ const st=await cfgQuery(P,MODE>=2?['no-preference','prefer-hardware','prefer-software']:['no-preference'],o);if(o.results['no-preference']===false)return{...o,status:'unsupported',resultStatus:'unsupported',measurementQuality:'none',executionStatus:'unsupported',unsupported:true,reason:'no-preferenceの設定が非対応(isConfigSupported=false)のため後続の問い合わせを中止'};const q=gq(st);return{...o,...q,...(st.includes('timeout')?{executionStatus:'timeout'}:{})}}
+// ---- モードと上限 ----
 const isHevc=P=>/^(hev1|hvc1)/.test(P.info.codec||'');
-function blockReason(ph,safe,P){if(!safe)return null;if(['rapid','recycle','webcodecs'].includes(ph))return '安全モードでは省略: '+({rapid:'高頻度の連続シーク',recycle:'動画要素の大量再生成',webcodecs:'WebCodecsの実デコード'})[ph];
- if(isHevc(P)&&['seek','play','stress'].includes(ph))return '安全モードでは省略: HEVCのハードウェアデコード試験';return null}
+function plan(ph,P){const lv=PHLV[ph];if(lv>MODE)return{block:'モード「'+MODN[MODE]+'」では実行不可（'+MODN[lv]+'が必要）'};
+ if(lv>0&&P.info.analysis.status!=='ok')return{block:'解析結果が「'+P.info.analysis.status+'」のため実行しない'};
+ if(lv>0&&P.info.frameIntervalKnown===false)return{block:'フレーム間隔が不明（PTS2件未満）のため実行しない'};
+ if(['seek','rapid','play','stress'].includes(ph)&&!hasRvfc())return{block:'requestVideoFrameCallback非対応のため実行しない',unsupported:true};
+ const hv=isHevc(P),w=P.info.codedWidth,hh=P.info.codedHeight,unk=!(w>0&&hh>0),heavy=hv||unk||w*hh>2.2e6;
+ if(unk&&lv>=2)return{block:'幅・高さが不明（解像度不明）のため高度診断は実行しない'};
+ if(hv&&lv>0&&MODE<2)return{block:'HEVCは基本動画検証では実行しない（高度診断＋追加確認が必要）'};
+ const caps=MODE<2?{seek:8,play:5}:heavy?{seek:8,play:5,stress:10,rapid:10,recycle:2,wc:2}:{seek:16,play:15,stress:30,rapid:20,recycle:4,wc:4};
+ return{caps,heavy,note:'codec='+P.info.codec+' '+P.info.codedWidth+'x'+P.info.codedHeight+(unk?'（解像度不明→高負荷条件として扱う）':heavy?'（高負荷条件: 上限を縮小）':'')+(hv?'\n※HEVCです。Windows ChromeではGPUクラッシュの記録があります':'')}}
 const withVideo=async(f,fn)=>{const h=await openVideo(f);try{return await fn(h.v)}finally{await closeVideo(h)}};
-async function doPhase(ph,f,P,safe,it){const n=(k,cap)=>safe?Math.min(+$(k).value,cap):+$(k).value,luma=$('cLuma').checked&&!safe;
- if(ph==='info'){it.capability=await capTest(P,safe);return it.capability}
- if(ph==='seek')return it.seek=await withVideo(f,v=>seekTest(P,v,n('nSeek',8),f.name));
- if(ph==='rapid')return it.rapid=await withVideo(f,v=>rapidTest(P,v));
- if(ph==='play')return it.play=await withVideo(f,v=>playTest(P,v,n('nPlay',5)));
- if(ph==='stress')return it.stress=await withVideo(f,v=>stressTest(P,v,n('nStress',30),f.name));
- if(ph==='recycle')return it.recycle=await recycle(f);
- if(ph==='webcodecs'){await sleep(500);return it.webcodecs=await wcTest(P,targets(P,n('nSeek',8)),luma,f.name)}}
-const item=f=>{let it=REPORT.items.find(x=>x.file.name===f.name);if(!it){it={file:{name:f.name,sizeBytes:f.size},errors:[]};REPORT.items.push(it)}return it};
-function setBusy(b){busy=b;document.querySelectorAll('.ph,#fi,#fsel').forEach(x=>x.disabled=b)}
-async function runPhase(ph){if(busy)return;const f=FILES[+$('fsel').value];if(!f)return alert('動画ファイルを選んでください');const safe=$('cSafe').checked;setBusy(true);
- const rec={phase:ph,file:f.name,safeMode:safe,startedAt:new Date().toISOString(),endedAt:null,status:'running'};REPORT.phases.push(rec);const it=item(f);save();beat(ph,f.name,0);log('▶ '+ph+'  '+f.name+(safe?'  [安全モード]':''));let P=null;
- try{if(/^(image|audio)\//.test(f.type)){rec.status='skipped';rec.reason='Step B対象外（画像・独立音声）';log('  スキップ: '+rec.reason)}
-  else{P=await parse(f);it.parser=P.info;const why=blockReason(ph,safe,P);
-   if(why){rec.status='skipped';rec.reason=why;log('  '+why)}else{const r=await doPhase(ph,f,P,safe,it);rec.status='done';log('  '+JSON.stringify(r&&(r.summary||r.main&&{cfg:r.configSupport,classes:r.main.classes,msMedian:r.main.msMedian,leak:r.main.leakedFrames,err:r.main.error}||r)).slice(0,900))}}}
- catch(e){rec.status='error';rec.error=errS(e);it.errors.push(ph+': '+errS(e));log('  失敗: '+errS(e))}
- finally{try{P&&P.input.dispose()}catch(e){}rec.endedAt=new Date().toISOString();rec.liveObjectUrls=urls;save();try{localStorage.removeItem(BK)}catch(e){}setBusy(false);log('■ '+ph+' → '+rec.status+'\n')}}
-function newReport(env){return{schema:TOOL.schema,tool:{name:TOOL.name,version:TOOL.version},createdAt:new Date().toISOString(),environment:env,library:{name:'mediabunny',version:MB_VER},privacy:'診断情報のみ。動画本体・映像データは含まない',phases:[],items:[]}}
+async function doPhase(ph,f,P,pl,rec){const par=rec.params={},adj=par.adjustedInputs=[];const N=(id,min,cap,def)=>{const r=num(id,min,cap,def);if(r.adj)adj.push(id+': 入力'+JSON.stringify(r.adj.raw)+'→'+r.v);par[id]=r.v;return r.v};
+ if(ph==='infoA')return{...(P.info.analysis.status==='ok'?{resultStatus:'complete',measurementQuality:'full'}:{resultStatus:'undetermined',measurementQuality:'none'}),analysis:P.info.analysis,info:P.info};
+ if(/^info[BCD]$/.test(ph)){if(P.info.analysis.status!=='ok'||!P.cfg)return{part:ph,status:'undetermined',resultStatus:'undetermined',measurementQuality:'none',undetermined:true,analysis:P.info.analysis,reason:'解析結果が ok ではないため問い合わせない'};return ph==='infoB'?capB(P,f.name):ph==='infoC'?capC(P,f.name):capD(P)}
+ if(ph==='seek'){const n=N('nSeek',4,pl.caps.seek,8);return withVideo(f,v=>seekTest(P,v,n,rec))}
+ if(ph==='rapid'){par.n=pl.caps.rapid;par.gapMs=50;return withVideo(f,v=>rapidTest(P,v,rec,par.n,50))}
+ if(ph==='play'){const s=Math.min(N('nPlay',2,pl.caps.play,5),Math.max(2,Math.floor(P.info.analyzedDurationSec||2)));par.playSec=s;return withVideo(f,v=>playTest(P,v,s,rec))}
+ if(ph==='stress'){const n=N('nStress',5,pl.caps.stress,10);return withVideo(f,v=>stressTest(P,v,n,rec))}
+ if(ph==='recycle'){par.cycles=pl.caps.recycle;return recycle(f,par.cycles,rec)}
+ if(ph==='webcodecs'){const n=N('nSeek',1,pl.caps.wc,pl.caps.wc);return wcTest(P,targets(P,n),$('cLuma').checked,rec)}}
+const item=sel=>{let it=REPORT.items.find(x=>x.fileId===sel.id);if(!it){it={fileId:sel.id,file:sel.fp,errors:[]};REPORT.items.push(it)}return it};
+function refreshBtns(){document.querySelectorAll('.ph').forEach(b=>b.disabled=busy||libFail||PHLV[b.dataset.k]>MODE||(['seek','rapid','play','stress'].includes(b.dataset.k)&&!hasRvfc()));$('fi').disabled=$('fsel').disabled=$('mode').disabled=busy;$('cLuma').disabled=busy||MODE<2;if(MODE<2)$('cLuma').checked=false}
+function setBusy(b){busy=b;refreshBtns()}
+async function runPhase(ph){if(busy)return;const sel=FILES[+$('fsel').value];if(!sel)return alert('動画ファイルを選んでください');
+ if(document.visibilityState!=='visible')return alert('ページが非表示です。ページを前面にして、もう一度実行してください（非表示中はrVFC等が止まるため検査を開始しません）');
+ const t0=now(),f=sel.f,cm=$('tCrash').value,prev=REPORT.phases.filter(p=>p.session===SID).pop();setBusy(true);CTX={hidden:false,limit:LIMS[ph],deadline:now()+LIMS[ph],status:null};
+ const rec={phase:ph,mode:MODN[MODE],session:SID,fileId:sel.id,file:f.name,startedAt:new Date().toISOString(),endedAt:null,status:'running',decodePath:'unknown（HTMLVideoElementのHW/SW判別はコードから確定できない）',
+  conditions:{visibilityAtStart:document.visibilityState,pendingTasksAtStart:[...PEND].map(e=>e.name),secSincePageLoad:r3((now()-T_LOAD)/1e3),phaseIndexInSession:REPORT.phases.filter(p=>p.session===SID).length,previousPhaseInSession:prev?{phase:prev.phase,status:prev.status}:null,
+   minutesSinceLastCrashUserInput:cm!==''&&Number.isFinite(+cm)&&+cm>=0?+cm:null,userNote:$('note').value.slice(0,300)||null}};
+ REPORT.phases.push(rec);const it=item(sel);save(true);log('▶ '+ph+'  '+f.name+'  ['+MODN[MODE]+']');let P=null;
+ try{if(/^(image|audio)\//.test(f.type)){rec.status='skipped';rec.reason='Step B対象外（画像・独立音声）'}
+  else{const cached=/^info[BCD]$/.test(ph)&&META[sel.id];
+   if(cached){P={info:cached.info,cfg:cached.cfg,fd:cached.fd,input:null};rec.infoSource='cached（前回のメタデータ解析結果。再解析しない）'}else{P=await parse(f,rec);rec.infoSource='parsed now（Mediabunnyでメタデータ解析）';META[sel.id]={info:P.info,cfg:P.cfg,fd:P.fd}}
+   it.parser=P.info;const pl=plan(ph,P);
+   if(pl.block){rec.status=pl.unsupported?'unsupported':'skipped';rec.reason=pl.block}
+   else if(PHLV[ph]===2&&!confirm('高度診断「'+ph+'」を実行します。\n'+pl.note+'\n上限: '+JSON.stringify(pl.caps)+'\nGPU/ドライバーが不安定な環境では画面暗転・クラッシュの恐れがあります。実行しますか？')){rec.status='skipped';rec.reason='ユーザーが実行確認を拒否'}
+   else{const r=await doPhase(ph,f,P,pl,rec);rec.result=r;delete rec.partial;
+    const q=(r&&r.resultStatus)?r:(r&&r.error)?{resultStatus:'failed',measurementQuality:'none'}:{resultStatus:'complete',measurementQuality:'full'};
+    rec.resultStatus=q.resultStatus;rec.measurementQuality=q.measurementQuality;if(q.breakdown)rec.breakdown=q.breakdown;
+    const mainExecutionStatus=r&&r.main&&r.main.status&&r.main.status!=='done'?r.main.status:null;
+    rec.executionStatus=(r&&r.executionStatus)||mainExecutionStatus||STAT_OF[q.resultStatus]||'done';rec.status=rec.executionStatus; // statusは互換用。実行状態と結果品質は別フィールド
+    if(r&&r.error&&rec.status==='done')rec.executionStatus=rec.status='error';if(r&&r.unsupported){rec.executionStatus=rec.status='unsupported';rec.reason=r.reason||'ブラウザが当該APIに非対応'}else if(r&&r.reason&&!rec.reason)rec.reason=r.reason;
+    log('  '+JSON.stringify(r&&(r.summary||r.main&&{cfg:r.configSupport,status:r.main.status,classes:r.main.classes,msMedian:r.main.msMedian,leak:r.main.leakedFrames,err:r.main.error}||r)).slice(0,900))}}}
+ catch(e){if(e instanceof Stop){rec.status=e.kind;rec.reason=e.message}else{rec.status='error';rec.error=errS(e);it.errors.push(ph+': '+errS(e))}}
+ finally{if(P&&P.input)await safeDispose(P.input,rec);
+  if(CTX.hidden&&['done','error','timeout'].includes(rec.status)){rec.statusBeforeInvalid=rec.status;rec.status='invalid';rec.executionStatus='invalid';rec.resultStatus='invalid';rec.measurementQuality='none';rec.reason='測定中にページが非表示になった（バックグラウンド化）。結果は信頼できない'}
+  if(CTX.hidden)rec.hiddenAt=CTX.hiddenAt;rec.deadline={limitMs:CTX.limit,elapsedMs:r3(now()-t0),exceeded:now()>CTX.deadline,scope:'parse〜フェーズ処理（後片付けは別枠）。協調的な中止のみ：待機は打ち切れるが、Mediabunny読取・play()等の処理自体は中止できない'};rec.unfinishedTasks=[...PEND].map(e=>({name:e.name,kind:e.kind,ownedByInput:!!e.owner,abandoned:e.abandoned,state:'pending(未完了)'}));if(rec.unfinishedTasks.length)log('  ⚠ 未完了の非同期処理が残っています: '+rec.unfinishedTasks.map(x=>x.name+'['+x.kind+']').join(','));if(!rec.resultStatus){rec.resultStatus=rec.status;rec.measurementQuality='none'}if(!rec.executionStatus)rec.executionStatus=rec.status;if(!rec.inputDisposal)rec.inputDisposal='not-applicable';updateCleanupStatus(rec);rec.endedAt=new Date().toISOString();rec.liveObjectUrls=urls;CTX=null;save(true);setBusy(false);log('  → '+rec.status+' [結果:'+rec.resultStatus+' / 品質:'+rec.measurementQuality+']'+(rec.reason?'（'+rec.reason+'）':'')+'\n')}}
+function newReport(e){return{schema:TOOL.schema,tool:{name:TOOL.name,version:TOOL.version},createdAt:new Date().toISOString(),environment:e,library:{name:'mediabunny',version:MB_VER},privacy:'診断情報のみ。動画本体・映像データは含まない',
+ notes:{capability:'capability（canPlayType/MediaCapabilities/isConfigSupported）は対応能力の表示で、実デコード成功・ハードウェアデコード成功を保証しない',decodePath:'HTMLVideoElementのHW/SW区別はコードから確定できないため unknown と記録。WebCodecsは hardwareAcceleration=no-preference のみ使用（prefer-softwareもSW保証ではない）',
+ hardware:'このツールはChromeのハードウェアアクセラレーション設定を変更・確認しない。chrome://gpuで確認する',statuses:'executionStatus/statusは実行終了状態、resultStatus/measurementQualityは測定結果の質。両者は独立し、timeoutとpartialが同時にあり得る。cleanupStatusはconfirmed/pending/failed/unconfirmed/not-applicableで別管理.'},sessions:[],phases:[],items:[]}}
 function exportJson(){const d=new Date(),z=n=>String(n).padStart(2,'0'),nm='video_probe_b_'+d.getFullYear()+z(d.getMonth()+1)+z(d.getDate())+'_'+z(d.getHours())+z(d.getMinutes())+z(d.getSeconds())+'.json';
  REPORT.exportedAt=d.toISOString();const u=mk(new Blob([JSON.stringify(REPORT,null,1)],{type:'application/json'})),a=document.createElement('a');a.href=u;a.download=nm;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>rm(u),10000)}
-async function init(){PHASES.forEach(([k,l])=>{const b=document.createElement('button');b.className='ph';b.textContent=l;b.onclick=()=>runPhase(k);$('btns').appendChild(b)});
- $('fi').onchange=()=>{FILES=[...$('fi').files];$('fsel').replaceChildren(...FILES.map((f,i)=>new Option(f.name,i)))};
- $('cSafe').onchange=e=>{if(!e.target.checked&&!confirm('安全モードを解除すると、HEVCのハードウェアデコードやWebCodecs、高頻度シークを実行できます。GPUドライバーが不安定な環境ではクラッシュの恐れがあります。解除しますか？'))e.target.checked=true;$('cLuma').disabled=e.target.checked;if(e.target.checked)$('cLuma').checked=false};$('cLuma').disabled=true;
- $('save').onclick=exportJson;$('reset').onclick=()=>{if(confirm('保存済みの診断結果を消去しますか？')){try{localStorage.removeItem(SK);localStorage.removeItem(BK)}catch(e){}REPORT=newReport(REPORT.environment);$('warn').textContent='';log('消去しました')}};
- const env0=await env();try{REPORT=JSON.parse(localStorage.getItem(SK)||'null')}catch(e){}
- if(REPORT&&REPORT.schema===TOOL.schema){const r=REPORT.phases.filter(p=>p.status==='running').pop();let b=null;try{b=JSON.parse(localStorage.getItem(BK)||'null')}catch(e){}
-  if(r){r.status='interrupted';r.interruptedNote='ページ再読み込み時に「実行中」のまま残っていた（クラッシュ・強制終了の可能性）';if(b)r.lastBeat=b;save();$('warn').textContent='前回、フェーズ「'+r.phase+'」（'+r.file+'）の実行中に中断した可能性があります'+(b?'（最後の進捗: '+b.i+'件目）':'')+'。結果は保存済みで、JSON保存できます。'}}
- else REPORT=newReport(env0);REPORT.environment=env0;
- try{const s=await loadMB();$('stat').innerHTML='<small>HTTPS:'+(location.protocol==='https:')+' / VideoDecoder:'+env0.api.VideoDecoder+' / rVFC:'+env0.api.rVFC+' / Mediabunny '+MB_VER+'（'+s+'）／保存済みフェーズ:'+REPORT.phases.length+'</small>'}catch(e){$('stat').textContent='ライブラリ読込失敗: '+errS(e);document.querySelectorAll('.ph').forEach(x=>x.disabled=true)}}
-init();window.__b={runPhase,report:()=>REPORT,liveUrls:()=>urls};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible'&&CTX&&!CTX.hidden){CTX.hidden=true;CTX.hiddenAt=new Date().toISOString();log('⚠ ページが非表示になりました。このフェーズの測定は無効として中断します')}});
+async function init(){PHASES.forEach(([k,l])=>{const b=document.createElement('button');b.className='ph';b.dataset.k=k;b.textContent=l;b.onclick=()=>runPhase(k);$('btns').appendChild(b)});
+ $('fi').onchange=()=>{FILES=[...$('fi').files].map(f=>({f,id:SID+'-'+(++fileSeq),fp:{name:f.name,sizeBytes:f.size,lastModified:f.lastModified,type:f.type}}));$('fsel').replaceChildren(...FILES.map((x,i)=>new Option(x.f.name+' ('+Math.round(x.f.size/1048576*10)/10+'MB)',i)))};
+ $('mode').value='0';$('mode').onchange=e=>{const m=+e.target.value,msg=['',
+  '基本動画検証モードを有効にします。HTMLVideoElementで動画を実際に再生・シークします。GPUやドライバーが不安定な環境では、画面の暗転・ブラウザの無反応・クラッシュが起きる可能性があります。続けますか？',
+  '高度診断モードを有効にします。連続シーク・負荷シーク・要素再生成・WebCodecs実デコードを含み、GPU負荷が高くなります。実行は各フェーズごとに再確認します。GPUやドライバーが不安定な環境では実行しないでください。続けますか？'][m];
+  if(m>MODE&&!confirm(msg)){e.target.value=String(MODE);return}MODE=m;refreshBtns()};
+ $('save').onclick=exportJson;$('reset').onclick=()=>{if(confirm('保存済みの診断結果を消去しますか？（このページのメモリ上の結果も消えます。先にJSON保存してください）')){try{localStorage.removeItem(SK)}catch(e){}REPORT=newReport(REPORT.environment);storageFail=0;$('warn').textContent=$('warn2').textContent='';log('消去しました')}};
+ const env0=await env();let raw=null;try{raw=localStorage.getItem(SK);localStorage.removeItem('vpb:beat')}catch(e){}
+ try{REPORT=JSON.parse(raw||'null')}catch(e){REPORT=null}
+ let mig=null;if(REPORT&&REPORT.schema!==TOOL.schema){let okb=false;try{localStorage.setItem('vpb:report:old',raw);okb=true}catch(e){mig={from:REPORT.schema,archived:false,error:errS(e)}}if(okb)mig={from:REPORT.schema,archived:true};
+  if(okb)log('旧版スキーマの保存データを vpb:report:old に退避しました');else{log('⚠ 旧版データの退避に失敗しました（容量不足の可能性）。旧データはこのまま上書きされ失われます');$('warn2').textContent='⚠ 旧版データの退避に失敗。旧データは上書きされます'}REPORT=null}
+ if(REPORT){const rs=REPORT.phases.filter(p=>p.status==='running');rs.forEach(r=>{r.status='interrupted';r.interruptedNote='ページ再読み込み時に「実行中」のまま残っていた（クラッシュ・強制終了・再読み込みの可能性。原因は不明）'});
+  if(rs.length){const r=rs[rs.length-1];$('warn').textContent='前回、フェーズ「'+r.phase+'」（'+r.file+'）の実行中に中断した可能性があります'+(r.progress?'（最後の進捗: '+r.progress.i+'/'+r.progress.n+'）':'')+'。保存済みの診断結果はJSON保存できます。'}}
+ else{REPORT=newReport(env0);if(mig)REPORT.migration=mig}REPORT.environment=env0;REPORT.sessions=(REPORT.sessions||[]).concat({id:SID,loadedAt:new Date().toISOString(),version:TOOL.version});save(true);refreshBtns();
+ try{const s=await loadMB();$('stat').innerHTML='<small>HTTPS:'+(location.protocol==='https:')+' / VideoDecoder:'+env0.api.VideoDecoder+' / rVFC:'+env0.api.rVFC+' / Mediabunny '+MB_VER+'（'+s+'）／保存済みフェーズ:'+REPORT.phases.length+'</small>'}catch(e){libFail=true;refreshBtns();$('stat').textContent='ライブラリ読込失敗: '+errS(e)}}
+globalThis.__b={runPhase,report:()=>REPORT,liveUrls:()=>urls,_t:{STAT_OF,setSeekTmo:x=>{SEEK_TMO=x},grade,cfgQuery,wcTest,recycle,stressTest,parse,parseBody,seekTest,rapidTest,playTest,capB,capC,capD,capQ,mimeFor,safeDispose,disposeOnce,own,guard,META,setRvfc:x=>{RVFC_OVERRIDE=x},setFiles:a=>{FILES=a},pend:()=>[...PEND].map(e=>e.name),setMB:m=>{MB=m},setCTX:c=>{CTX=c},idxLE,idxNear,cls,num,serialize,save,seekOnce,decodeRun,closeVideo,mx,plan,setTmo:x=>{DEC_TMO=x},setReport:r=>{REPORT=r},setMode:m=>{MODE=m},cleanupBad:()=>CLEANUP_BAD}};
+if(!globalThis.__VPB_TEST)init();
 </script></body></html>
